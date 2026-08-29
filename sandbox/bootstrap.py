@@ -53,9 +53,56 @@ def _harden(limits: dict) -> None:
     socket.socketpair = _blocked
 
     # 3. No subprocesses — belt and braces alongside RLIMIT_NPROC.
+    def _no_subprocess(*_a, **_kw):
+        raise PermissionError("starting processes is blocked inside the sandbox")
+
     for name in ("system", "popen", "execv", "execve", "fork", "forkpty", "spawnv"):
         if hasattr(os, name):
-            setattr(os, name, _blocked)
+            setattr(os, name, _no_subprocess)
+
+    # 3b. Filesystem confinement — the sandbox working directory and nothing
+    #     else. Without this the other three measures are theatre: the snippet
+    #     cannot open a socket, but it CAN read the repo's .env by absolute path
+    #     and print the gateway key straight into its own result. (It could, and
+    #     did, until this went in.) Scrubbing the environment is not enough when
+    #     the secrets are also on disk.
+    #
+    #     The guards go on the names a snippet can reach. importlib captured its
+    #     own references to _io at interpreter start, so the stdlib still
+    #     imports normally — verified, not assumed: test_stdlib_imports_still
+    #     _work_under_confinement.
+    workdir = os.path.realpath(os.getcwd())
+
+    def _permit(path):
+        """Allow only paths inside the sandbox working directory."""
+        if isinstance(path, int):
+            return path            # an already-open fd, not a new lookup
+        try:
+            resolved = os.path.realpath(os.fspath(path))
+        except (TypeError, ValueError):
+            return path
+        if resolved != workdir and not resolved.startswith(workdir + os.sep):
+            raise PermissionError(
+                f"path outside the sandbox is blocked: {os.fspath(path)!r}. "
+                "The diagnostic may only touch its own working directory; pass "
+                "any data you need in through PAYLOAD.")
+        return path
+
+    def _guard(fn):
+        def wrapper(path, *a, **kw):
+            _permit(path)
+            return fn(path, *a, **kw)
+        return wrapper
+
+    import io as _io_mod
+
+    builtins.open = _guard(builtins.open)
+    _io_mod.open = builtins.open
+    _io_mod.FileIO = _guard(_io_mod.FileIO)
+    for name in ("open", "listdir", "scandir", "remove", "unlink", "rename",
+                 "replace", "rmdir", "mkdir", "makedirs", "chmod", "truncate"):
+        if hasattr(os, name):
+            setattr(os, name, _guard(getattr(os, name)))
 
     # 4. Import denylist. Everything else in the stdlib stays available so the
     #    agent can genuinely write useful analysis code.

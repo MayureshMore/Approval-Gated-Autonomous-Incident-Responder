@@ -61,8 +61,26 @@ def test_infinite_loop_is_killed():
 
 
 def test_memory_bomb_does_not_take_down_the_parent():
-    res = run_python("RESULT = bytearray(4 * 1024 * 1024 * 1024)", timeout=8)
-    assert not res["ok"]                 # died in the child; we are still here
+    """The guarantee is that the PARENT survives — not that the child is capped.
+
+    This test used to read `assert not res["ok"]` and passed for the wrong
+    reason: macOS rejects RLIMIT_AS, RLIMIT_DATA and RLIMIT_RSS alike, so there
+    is no address-space cap at all and the 4 GB allocation goes straight
+    through. The run "failed" only because a bytearray is not JSON
+    serialisable — it would have passed with no limits whatsoever. Assert what
+    actually holds on every platform instead.
+    """
+    res = run_python("RESULT = len(bytearray(4 * 1024 * 1024 * 1024))", timeout=30)
+
+    if res["ok"]:
+        # No enforceable memory cap here (macOS). Process isolation and the
+        # wall-clock kill are what protect us, and that is the honest claim.
+        assert res["result"] == 4 * 1024 * 1024 * 1024
+    else:
+        assert "MemoryError" in (res["error"] or "") or "signal" in (res["error"] or "")
+
+    # Whatever happened in there, we are still running and still usable.
+    assert run_python("RESULT = 'alive'")["result"] == "alive"
 
 
 # --- failure surfaces as data, never as a crash ----------------------------
@@ -157,3 +175,75 @@ def test_a_syntax_error_still_reports_cleanly():
 
     assert out["ok"] is False
     assert "SyntaxError" in out["error"]
+
+
+# --- filesystem confinement ------------------------------------------------
+# Until this went in, the sandbox blocked sockets and subprocesses but let a
+# snippet do open('/path/to/repo/.env').read() and hand the gateway key back in
+# its own result. Scrubbing the environment is not enough when the secrets are
+# also sitting on disk.
+import os as _os
+
+REPO = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+
+
+def _blocked(code: str) -> str:
+    out = run_python(code)
+    assert not out["ok"], f"escape succeeded: {out.get('result')!r}"
+    return out["error"] or ""
+
+
+def test_cannot_read_the_dotenv_that_holds_the_gateway_key():
+    err = _blocked(f"RESULT = open({REPO + '/.env'!r}).read()")
+    assert "outside the sandbox" in err
+
+
+def test_cannot_read_arbitrary_system_files():
+    assert "outside the sandbox" in _blocked("RESULT = open('/etc/passwd').read()")
+
+
+def test_cannot_read_the_projects_own_source():
+    assert "outside the sandbox" in _blocked(f"RESULT = open({REPO + '/tools.py'!r}).read()")
+
+
+def test_cannot_write_outside_the_workdir(tmp_path):
+    target = str(tmp_path / "escape.txt")
+    assert "outside the sandbox" in _blocked(f"RESULT = open({target!r}, 'w').write('x')")
+    assert not _os.path.exists(target), "the sandbox wrote a file outside its workdir"
+
+
+def test_cannot_list_directories_outside_the_workdir():
+    assert "outside the sandbox" in _blocked(f"import os\nRESULT = os.listdir({REPO!r})")
+    assert "outside the sandbox" in _blocked("import os\nRESULT = os.listdir('/')")
+
+
+def test_low_level_file_apis_are_confined_too():
+    """builtins.open is not the only door: io and os.open reach the same files."""
+    env = REPO + "/.env"
+    assert "outside the sandbox" in _blocked(f"import io\nRESULT = io.open({env!r}).read()")
+    assert "outside the sandbox" in _blocked(
+        f"import io\nRESULT = io.FileIO({env!r}).read().decode()")
+    assert "outside the sandbox" in _blocked(
+        f"import os\nRESULT = os.read(os.open({env!r}, os.O_RDONLY), 10).decode()")
+
+
+def test_the_workdir_itself_stays_usable():
+    """Confinement must not break the diagnostic's actual job."""
+    out = run_python("open('scratch.txt', 'w').write('data')\n"
+                     "RESULT = open('scratch.txt').read()")
+    assert out["ok"] and out["result"] == "data", out.get("error")
+
+
+def test_stdlib_imports_still_work_under_confinement():
+    """The import machinery reads .py files from outside the workdir. It holds
+    its own references to _io from interpreter start, so the guards do not
+    reach it — but that is a claim worth failing loudly on."""
+    out = run_python("import json, statistics, datetime, re, collections\n"
+                     "RESULT = [json.dumps({'a': 1}), statistics.mean([1, 2, 3])]")
+    assert out["ok"], out.get("error")
+    assert out["result"] == ['{"a": 1}', 2]
+
+
+def test_the_diagnostics_module_still_imports():
+    out = run_python("from diagnostics import correlate_deploy_to_incident\nRESULT = 'ok'")
+    assert out["ok"] and out["result"] == "ok", out.get("error")
