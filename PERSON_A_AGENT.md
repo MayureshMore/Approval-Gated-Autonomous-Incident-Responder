@@ -235,7 +235,7 @@ mid-demo to show there is nothing up our sleeve.
 ## If you are resuming cold
 1. `.venv/bin/python run_agent.py --selftest` → `PASS` with the mock env up, or
    `OK (wiring verified)` with it down. Only `FAIL` means the build is wrong.
-2. `.venv/bin/python -m pytest` → expect **201 passed**.
+2. `.venv/bin/python -m pytest` → expect **215 passed**.
 3. Do a full dashboard run (commands at the top). If that is green, the demo is safe.
 4. Then: A2 live (needs gateway onboarding) or A6 live (needs `gh` + a repo).
 
@@ -368,7 +368,7 @@ Ran the whole stack as a tester, not as the author: live servers, real runs,
 adversarial probes. Everything below was executed, not inferred from the code.
 
 **Green:**
-- `201 passed`
+- `215 passed` (mine 201 + Zeel's 14)
 - `--selftest` PASS with the servers up
 - sim run: 8 steps, correlation 0.76, service healthy
 - **live TrueFoundry runs x5**: 0.76 every time, real rationale on every card,
@@ -495,3 +495,54 @@ a live gateway run) plus 12 deliberately hostile events with `<script>` and
 `<img onerror>` in every field: zero injections survived.
 
 This is the third time I have edited your file — the other two are in section 9.
+
+---
+
+## 12. Merged with Zeel's QA pass — the final set
+
+Merged `origin/master` into this branch. Git auto-merged both overlapping files
+(`tests/test_contracts.py`, `ui/dashboard.html`) with no conflict markers, but
+auto-merged is not the same as still correct, so the whole thing was re-verified
+by running it.
+
+### What she found — one of these is the most important bug in the project
+
+1. **The approval gate failed OPEN across runs.** `GET /decision` matched on
+   action name alone, and action names are not unique between runs. Approve a
+   rollback once, start a second run without resetting the bus, and the new run
+   executed with nobody at the keyboard — recording `by: "human"` for a decision
+   no human made. **This is claim 1, the invariant the entire demo rests on.**
+   Her fix is on the bus, which is the only place it can work: our own stale-id
+   guard (`ApprovalGate._seen`) lives in process memory and is empty in a freshly
+   started process. Reproduced end to end on the merged tree — run 2 now waits,
+   executes nothing, production stays degraded.
+2. **The environment healed on any version string.** Rolling back to
+   `v9.9.9-never-shipped`, or to the bad deploy `v1.4.2` itself, both reported
+   healthy — quietly rewarding a wrong diagnosis and hollowing out the claim that
+   the scenario forces real reasoning. Verified: both now refused, `v1.4.1` heals.
+3. **A rejected run showed INVESTIGATING forever**, and the "Resolved" banner
+   leaked across a `/reset`. Her `STOOD DOWN` / `FINISHED` branches fix it.
+4. `.gitattributes` pins shell scripts to LF so the launcher survives a Windows
+   clone.
+
+### Merge verification — every line of this was executed
+
+- `215 passed`, `--selftest` PASS
+- fail-open scenario reproduced end to end: run 2 waits, executes nothing
+- version guard: `v9.9.9` and `v1.4.2` refused, `v1.4.1` heals
+- sandbox confinement intact: 5/5 escapes blocked, real work still runs
+- dashboard renders all three terminal states — her `STOOD DOWN` and `FINISHED`
+  alongside my filters, scroll container and keyboard shortcuts — checked against
+  real captured streams for a rejected run, an approved run, and an open gate
+- live gateway run: 0.76, real rationale on the card, service healthy
+- `kill -9` mid-approval then `--resume`: same run_id, pending call re-gated,
+  zero rollbacks before the human
+- `scripts/demo.sh` clean start to finish, Ctrl-C leaves nothing behind
+
+### One process note, because it cost time
+
+The first fail-open re-test appeared to FAIL after merging. It had not: the
+servers were the ones started before the merge, and **uvicorn does not reload**.
+Restarting them showed her fix working correctly. Anything that tests the bus or
+the mock env has to restart them first — a stale uvicorn will happily tell you a
+fix does not work.
