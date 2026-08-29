@@ -147,9 +147,9 @@ because of the space before the digit.
 Right at the end we added a one-command demo launcher, because typing six
 commands into three terminals in front of judges is how demos die.
 
-It had five bugs. We know, because this was the first PR our code review agent
-actually reviewed — and it found all five. Every one was real, and we reproduced
-each before fixing:
+It had five bugs. We know because this was the first PR **Qodo** actually
+reviewed — and it found all five. Every one was real, and we reproduced each
+before fixing:
 
 1. The launcher **inherited `AUTO_APPROVE=1`**, so if you'd ever set it for a
    recording, every destructive action would self-approve *while the dashboard
@@ -170,6 +170,45 @@ each before fixing:
 
 Number 5 is the one that stings. We'd tested the feature. We just hadn't tested
 the way we were about to demo it.
+
+Worth saying how close we came to not having that review at all. Qodo sat silent
+for twenty-five minutes across two PRs with the GitHub App confirmed installed,
+and we nearly dropped the track. Installing the App is only *half* the setup —
+you also have to connect a Git provider inside the Qodo dashboard, and without
+that its backend never processes the webhook. Once connected it responded in ten
+seconds. Every PR after that went through it, findings fixed before merge.
+
+### The bug we only found by rehearsing the demo
+
+The last thing we did was run the whole thing from a fresh clone, as a judge
+would. Most of it passed. Then this:
+
+Our pitch says *"it writes a diagnostic and runs it in a sandbox to score the
+correlation: 0.76."* On the live gateway that **never happened**. The tool
+description named the helper functions but never gave their **signatures**, so
+the model guessed — three failed attempts in one run:
+
+```
+deploy_times=...          → unexpected keyword argument
+(positional, positional)  → missing required argument 'error_logs'
+(..., error_logs=[...])   → TypeError: fromisoformat: argument must be str
+```
+
+It then fell back to log evidence and finished the run *successfully*. That is
+why this survived every earlier test: the run worked, the headline feature
+didn't. Fixed by generating the signatures from the source with `ast` — never
+importing the sandbox module into the parent process — plus a worked example,
+with a test asserting that example runs verbatim in the sandbox.
+
+Worse was hiding behind it. With subagents enabled, the model passed a
+subagent's findings *summary* where a list of log lines belonged. Iterating a
+dict yields its keys, so nothing matched the version and the incident scored
+**0.36 instead of 0.76** — no exception, just a plausible wrong number on screen
+while you narrate the right one. A wrong answer that looks right is a worse
+failure than a crash.
+
+We had fifteen tests proving the sandbox was real. Every one of them ran *our*
+reference snippet, never the model's.
 
 ---
 
@@ -203,4 +242,4 @@ make setup && make demo
 
 Open http://localhost:8500/. No API key needed. Watch it stop and ask you.
 
-MIT licensed. 136 tests.
+MIT licensed. 161 tests.
