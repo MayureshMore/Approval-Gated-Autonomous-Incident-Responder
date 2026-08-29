@@ -55,9 +55,17 @@ def make_provider(name: str, run_id: str | None = None, model: str | None = None
     raise SystemExit(f"unknown provider '{name}'")
 
 
-def preflight(require_env: bool = True) -> list[str]:
-    """Check what would break BEFORE we are standing in front of judges."""
+def preflight(require_env: bool = True) -> tuple[list[str], list[str]]:
+    """
+    Check what would break BEFORE we are standing in front of judges.
+
+    Returns (problems, not_started). The split matters: "the code is wrong" and
+    "you haven't started the servers yet" are completely different situations,
+    and collapsing both into FAIL means the check you run to reassure yourself
+    before a demo is the thing that scares you.
+    """
     problems: list[str] = []
+    not_started: list[str] = []
 
     a = audit()
     for key in ("missing_impl", "gated_without_impl"):
@@ -72,15 +80,24 @@ def preflight(require_env: bool = True) -> list[str]:
         problems.append("sandbox network isolation is NOT active")
 
     if require_env:
+        import requests
+
         import tools
         try:
-            alerts = tools.get_active_alerts()
-            if not alerts:
-                problems.append(f"mock env at {tools.BASE_URL} has no active alerts — POST /reset")
+            if not tools.get_active_alerts():
+                problems.append(
+                    f"mock env at {tools.BASE_URL} has no active alerts — "
+                    f"run: curl -X POST {tools.BASE_URL}/reset")
+        except requests.exceptions.ConnectionError:
+            # Nothing listening: a setup step, not a defect.
+            not_started.append(
+                f"mock env is not running at {tools.BASE_URL} — start it with "
+                f"`make demo`, or: PYTHONPATH=. .venv/bin/uvicorn mock_env.main:app --port 8000")
         except Exception as exc:
-            problems.append(f"mock env unreachable at {tools.BASE_URL}: {exc}")
+            problems.append(f"mock env at {tools.BASE_URL} is misbehaving: "
+                            f"{type(exc).__name__}: {exc}")
 
-    return problems
+    return problems, not_started
 
 
 def main() -> int:
@@ -160,7 +177,7 @@ def main() -> int:
     if not args.provider:
         args.provider = os.environ.get("PROVIDER", "sim")
 
-    problems = preflight(require_env=True)
+    problems, not_started = preflight(require_env=True)
     if args.provider == "truefoundry":
         from agent.providers.truefoundry import preflight as tfy_preflight
         if args.model:
@@ -170,7 +187,7 @@ def main() -> int:
             problems.append(f"truefoundry gateway: {tfy.get('error')}")
 
     if args.selftest:
-        report = {"registry": audit(), "problems": problems,
+        report = {"registry": audit(), "problems": problems, "not_started": not_started,
                   "config": {n: describe(n) for n in (
                       "TRUEFOUNDRY_API_KEY", "TRUEFOUNDRY_BASE_URL", "TRUEFOUNDRY_MODEL",
                       "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AGENT_BUS_URL",
@@ -178,11 +195,24 @@ def main() -> int:
         if args.provider == "truefoundry":
             report["truefoundry"] = tfy
         print(json.dumps(report, indent=2))
-        print("\nSELFTEST:", "FAIL" if problems else "PASS")
-        return 1 if problems else 0
-    if problems:
+
+        if problems:
+            print("\nSELFTEST: FAIL — the build is wrong:")
+            for pr in problems:
+                print("  -", pr)
+            return 1
+        if not_started:
+            # Wiring is sound; something just isn't up yet. Don't cry wolf.
+            print("\nSELFTEST: OK (wiring verified) — but a service is not running:")
+            for n in not_started:
+                print("  -", n)
+            return 0
+        print("\nSELFTEST: PASS")
+        return 0
+
+    if problems or not_started:
         print("Preflight failed:")
-        for pr in problems:
+        for pr in problems + not_started:
             print("  -", pr)
         return 1
 

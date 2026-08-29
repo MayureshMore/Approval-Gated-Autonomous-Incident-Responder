@@ -205,7 +205,8 @@ mid-demo to show there is nothing up our sleeve.
   leave the laptop.
 
 ## If you are resuming cold
-1. `.venv/bin/python run_agent.py --selftest` → expect `PASS` (mock env must be up).
+1. `.venv/bin/python run_agent.py --selftest` → `PASS` with the mock env up, or
+   `OK (wiring verified)` with it down. Only `FAIL` means the build is wrong.
 2. `.venv/bin/python -m pytest` → expect **153 passed**.
 3. Do a full dashboard run (commands at the top). If that is green, the demo is safe.
 4. Then: A2 live (needs gateway onboarding) or A6 live (needs `gh` + a repo).
