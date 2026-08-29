@@ -1,0 +1,18 @@
+# Environments
+.venv/
+venv/
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Run artefacts (regenerated every run — never a source of truth)
+ui/events.json
+
+# Scratch from the revert flow, if it ever escapes its temp dir
+_revert_repo/
+
+# OS
+.DS_Store
