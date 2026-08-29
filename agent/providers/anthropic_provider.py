@@ -46,3 +46,12 @@ class AnthropicProvider:
             self.messages[-1]["content"].append(block)
         else:
             self.messages.append({"role": "user", "content": [block]})
+
+    # -- session persistence (Layer 4) --------------------------------------
+    def snapshot(self) -> dict:
+        return {"messages": self.messages, "system": self.system, "model": self.model}
+
+    def restore(self, state: dict) -> None:
+        self.messages = state.get("messages", [])
+        self.system = state.get("system", self.system)
+        self.model = state.get("model", self.model)

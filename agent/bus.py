@@ -24,7 +24,7 @@ CONTRACT_KINDS = {
 }
 # Additive kinds — the dashboard may ignore them without breaking.
 EXTENDED_KINDS = {
-    "subagent_started", "subagent_finished", "sandbox_exec", "error",
+    "subagent_started", "subagent_finished", "sandbox_exec", "error", "run_resumed",
 }
 KNOWN_KINDS = CONTRACT_KINDS | EXTENDED_KINDS
 

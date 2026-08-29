@@ -60,6 +60,14 @@ class OpenAIProvider:
             "content": json.dumps(result, default=str)[:20000],
         })
 
+    # -- session persistence (Layer 4) --------------------------------------
+    def snapshot(self) -> dict:
+        return {"messages": self.messages, "model": self.model}
+
+    def restore(self, state: dict) -> None:
+        self.messages = state.get("messages", [])
+        self.model = state.get("model", self.model)
+
 
 def _loads(raw: Optional[str]) -> dict:
     """Models occasionally emit malformed argument JSON; an empty dict lets the

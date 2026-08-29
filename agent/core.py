@@ -17,7 +17,9 @@ from typing import Any, Callable, Optional
 
 from agent.approval import ApprovalGate
 from agent.bus import EventBus
+from agent.providers.base import ToolCall
 from agent.registry import build_registry, is_gated
+from agent.session import FAILED, FINISHED, RUNNING, SessionStore
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_MAX_STEPS = 16
@@ -59,18 +61,25 @@ class IncidentAgent:
         include_github: bool = False,
         max_steps: int = DEFAULT_MAX_STEPS,
         use_subagents: bool = False,
+        session: Optional[SessionStore] = None,
     ):
         self.provider = provider
         self.bus = bus or EventBus()
         self.gate = gate or ApprovalGate(self.bus)
         self.max_steps = max_steps
         self.use_subagents = use_subagents
+        self.include_github = include_github
+        self.session = session
         self.impls, self.schemas = build_registry(include_github=include_github)
         self.report = RunReport(run_id=self.bus.run_id, provider=getattr(provider, "name", "?"))
         self._denied: set[tuple] = set()
+        self._pending: list[ToolCall] = []   # calls requested but not yet completed
+        self._rationale = ""
+        self._scenario = ""
 
     # -- entry point --------------------------------------------------------
     def run(self, scenario: str = "checkout-service incident") -> RunReport:
+        self._scenario = scenario
         self.bus.emit("run_started", scenario=scenario,
                       provider=self.report.provider,
                       approval_mode=self.gate.mode,
@@ -81,6 +90,28 @@ class IncidentAgent:
             kickoff += "\n\n" + self._run_subagents()
 
         self.provider.start(load_system_prompt(), kickoff)
+        self._checkpoint()
+        return self._drive()
+
+    def resume(self, state: dict) -> RunReport:
+        """Continue a run that lost its process. Same run_id, same timeline."""
+        self._scenario = state.get("scenario", "")
+        self.report.steps = state.get("step", 0)
+        # Copy, don't alias: the caller's state dict must not mutate as we run.
+        self.report.tool_calls = list(state.get("tool_calls", []))
+        self.report.approvals = list(state.get("approvals", []))
+        self.report.sandbox_runs = state.get("sandbox_runs", 0)
+        self._denied = {tuple(d) for d in state.get("denied", [])}
+        self._rationale = state.get("rationale", "")
+        self._pending = [ToolCall(c["id"], c["name"], c.get("args", {}))
+                         for c in state.get("pending_calls", [])]
+        self.provider.restore(state.get("provider_state", {}))
+
+        self.bus.emit("run_resumed", scenario=self._scenario, step=self.report.steps,
+                      pending=[c.name for c in self._pending])
+        return self._drive()
+
+    def _drive(self) -> RunReport:
         try:
             self._loop()
         except Exception as exc:
@@ -91,24 +122,62 @@ class IncidentAgent:
                           destructive_executed=self.report.executed_destructive,
                           error=self.report.error)
             self.report.events = list(self.bus.events)
+            self._checkpoint(FAILED if self.report.error else FINISHED)
         return self.report
+
+    # -- checkpointing (Layer 4) --------------------------------------------
+    def _checkpoint(self, status: str = RUNNING) -> None:
+        if not self.session:
+            return
+        try:
+            self.session.save({
+                "run_id": self.report.run_id,
+                "status": status,
+                "scenario": self._scenario,
+                "provider": self.report.provider,
+                "provider_state": self.provider.snapshot(),
+                "step": self.report.steps,
+                "tool_calls": self.report.tool_calls,
+                "approvals": self.report.approvals,
+                "sandbox_runs": self.report.sandbox_runs,
+                "denied": [list(d) for d in self._denied],
+                "rationale": self._rationale,
+                "pending_calls": [{"id": c.id, "name": c.name, "args": c.args}
+                                  for c in self._pending],
+                "final_message": self.report.final_message,
+                "error": self.report.error,
+                "include_github": self.include_github,
+                "events": self.bus.events,
+            })
+        except Exception as exc:
+            # A failing checkpoint must never take down a live incident response.
+            print(f"[session] checkpoint failed: {exc}")
 
     # -- the loop -----------------------------------------------------------
     def _loop(self) -> None:
-        for _ in range(self.max_steps):
-            self.report.steps += 1
-            turn = self.provider.step(self.schemas)
+        while self.report.steps < self.max_steps:
+            # A resumed run finishes the calls it was midway through before it
+            # asks the model for anything new.
+            if not self._pending:
+                self.report.steps += 1
+                turn = self.provider.step(self.schemas)
 
-            if turn.text:
-                self.bus.emit("agent_message", text=turn.text)
+                if turn.text:
+                    self.bus.emit("agent_message", text=turn.text)
 
-            if not turn.wants_tools:
-                self.report.final_message = turn.text
-                return
+                if not turn.wants_tools:
+                    self.report.final_message = turn.text
+                    return
 
-            for call in turn.tool_calls:
-                result = self._handle(call, rationale=turn.text)
+                self._pending = list(turn.tool_calls)
+                self._rationale = turn.text
+                self._checkpoint()
+
+            for call in list(self._pending):
+                result = self._handle(call, rationale=self._rationale)
                 self.provider.record_tool_result(call, result)
+                self._pending = [c for c in self._pending if c.id != call.id]
+                self._checkpoint()
 
         self.bus.emit("agent_message",
                       text=f"Step budget ({self.max_steps}) exhausted; stopping.")
