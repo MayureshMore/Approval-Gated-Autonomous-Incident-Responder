@@ -151,7 +151,13 @@
 const ICON = {run_started:"▶",tool_call:"🔧",tool_result:"✓",awaiting_approval:"⏸",
   approval_decision:"👤",agent_message:"💬",run_finished:"🏁",
   subagent_started:"⇉",subagent_finished:"⇇",sandbox_exec:"🧪",error:"⚠",run_resumed:"↻"};
-let decided = new Set();
+// `decided` is derived from the event log on every render (see render()), never
+// accumulated across runs — otherwise a POST /reset leaves it stale and the
+// approval card never reappears for the next run. `optimistic` holds only the
+// id the operator just clicked, so the card hides instantly instead of waiting
+// for the next poll; it is dropped as soon as a new run starts.
+let optimistic = new Set();
+let lastRunKey = null;
 let runStartT = null, runEndT = null;
 
 function fmtElapsed(sec){
@@ -241,7 +247,13 @@ function render(events){
   let pending=null, lastMetrics=null, sawSandbox=false, sawReal=false, finished=false;
   const metricsHistory=[];
   const seenDecisionKeys=new Set();
+  const decided=new Set();          // rebuilt from THIS event log every render
   runStartT=null; runEndT=null;
+
+  // A cleared log, or a different first event, means a new run: forget any
+  // optimistic hide from the previous one.
+  const runKey = events.length ? `${events[0].run_id||""}:${events[0].t||""}` : "";
+  if(runKey!==lastRunKey){ lastRunKey=runKey; optimistic.clear(); }
 
   const rows=[];
   for(const e of events){
@@ -252,7 +264,8 @@ function render(events){
     else if(e.kind==="tool_result"&&e.result&&e.result.p99_latency_ms!==undefined){lastMetrics=e.result;metricsHistory.push(e.result);}
     if(e.kind==="sandbox_exec"||(e.kind==="tool_call"&&/diagnos|correlate|sandbox/i.test(JSON.stringify(e))))sawSandbox=true;
     if(e.kind==="tool_call"&&/^open_revert_pr$|^github_|^slack_/i.test(e.tool||""))sawReal=true;
-    if(e.kind==="awaiting_approval"&&!decided.has(e.action))pending=e;
+    if(e.kind==="awaiting_approval"&&!decided.has(e.action)
+       &&!optimistic.has(e.request_id||e.action))pending=e;
     if(e.kind==="approval_decision"){decided.add(e.action); if(pending&&pending.action===e.action)pending=null;}
     if(e.kind==="run_finished"){finished=true; runEndT=e.t;}
 
@@ -305,8 +318,9 @@ function render(events){
     document.getElementById("ap-action").textContent=`${pending.action}(${fmtArgs(pending.args)})`;
     document.getElementById("ap-reason").textContent=pending.reason||"";
     statusEl.textContent="AWAITING APPROVAL";statusEl.className="badge crit";
-    document.getElementById("btn-approve").onclick=()=>{decided.add(pending.action);sendDecision(pending.action,true,pending.request_id);ap.classList.add("hidden");};
-    document.getElementById("btn-reject").onclick=()=>{decided.add(pending.action);sendDecision(pending.action,false,pending.request_id);ap.classList.add("hidden");};
+    const key=pending.request_id||pending.action;
+    document.getElementById("btn-approve").onclick=()=>{optimistic.add(key);sendDecision(pending.action,true,pending.request_id);ap.classList.add("hidden");};
+    document.getElementById("btn-reject").onclick=()=>{optimistic.add(key);sendDecision(pending.action,false,pending.request_id);ap.classList.add("hidden");};
   }else{
     ap.classList.add("hidden");
   }

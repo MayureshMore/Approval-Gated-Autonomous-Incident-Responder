@@ -287,7 +287,31 @@ untouched and still yours. I only added a contract addendum to `EVENT_CONTRACT.m
   card, `--resume last`, watch it continue in the same timeline. Ten seconds, and
   it is a harness feature nobody else will have.
 
-## 8. Live gateway config (if you want to run the real agent yourself)
+## 8. Verified for you — Layer 4 renders correctly (your open item #4)
+Ran it end to end against your dashboard: run reaches the card, agent killed at
+the gate, `--list-runs` shows `step=6 pending=['rollback_service']`, `--resume last`
+continues, approval round-trips, service recovers. One `run_id` across the whole
+stream so it is a single timeline, `run_resumed` renders once, and the two raw
+`approval_decision` events dedupe to one row. Nothing needed from you here.
+
+## 9. Two bugs I fixed in ui/dashboard.html — flagging because it is your file
+Both were demo-path, both proven with a reproduction before changing anything.
+
+1. **Approval card never reappeared on a second run.** `decided` was module-level
+   and never cleared, so after one approval `!decided.has(action)` stayed false
+   forever in that browser tab. `DEMO_SCRIPT.md` says to `/reset` before every
+   run — so rehearsing once meant the real take had **no approval card at all**.
+   Fixed by deriving `decided` from the event log each render and keeping a
+   separate `optimistic` set (keyed by `request_id`) for the instant hide on
+   click, cleared whenever a new run starts. Verified with two consecutive live
+   runs and a `/reset` between them.
+2. **Model-controlled text was interpolated into HTML unescaped** (`fmtArgs`,
+   `e.tool`). The agent WRITES the diagnostic code, so `if n<len(deploys):` made
+   the parser swallow the rest of the row, and a model-chosen `to_version` was a
+   live XSS path. Escaped every model-controlled interpolation and widened
+   `escapeHtml` to cover quotes.
+
+## 10. Live gateway config (if you want to run the real agent yourself)
 Working, verified. Put your own PAT in `.env` (gitignored):
 ```
 TRUEFOUNDRY_API_KEY=<your PAT>
