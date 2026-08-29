@@ -28,6 +28,15 @@ mock_pid=""
 bus_pid=""
 agent_pid=""
 
+# Quoting "${@:-a b c}" yields ONE argument, which argparse then rejects. Set
+# the positional parameters instead, so each option stays its own argv element.
+[ "$#" -eq 0 ] && set -- --provider sim --subagents
+
+resuming="no"
+for arg in "$@"; do
+  [ "$arg" = "--resume" ] && resuming="yes"
+done
+
 log()  { printf '\033[36m▸\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m!\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
@@ -45,7 +54,16 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 port_free() {
-  ! nc -z 127.0.0.1 "$1" >/dev/null 2>&1
+  # Probe with the interpreter we already validated, not nc: `nc` is not a
+  # declared prerequisite, and `! missing_cmd` reports command-not-found as
+  # success — which would silently mark every port free and let the launcher
+  # run against somebody else's server.
+  "$PYTHON" - "$1" <<'PYEOF'
+import socket, sys
+with socket.socket() as s:
+    s.settimeout(1)
+    sys.exit(1 if s.connect_ex(("127.0.0.1", int(sys.argv[1]))) == 0 else 0)
+PYEOF
 }
 
 wait_for() {
@@ -58,6 +76,15 @@ wait_for() {
 }
 
 [ -x "$PYTHON" ] || die "no interpreter at $PYTHON. Run: uv venv --python 3.12 .venv && uv pip install -r requirements.txt"
+
+# This launcher tells the operator to approve in the dashboard, so it must not
+# inherit AUTO_APPROVE=1 from the shell or .env — that would approve every
+# destructive action with no human, while the UI still claims to be gating.
+if [ "${AUTO_APPROVE:-}" = "1" ]; then
+  warn "AUTO_APPROVE=1 is set in the environment; ignoring it so the approval gate is real."
+  warn "For an unattended recording, run: AUTO_APPROVE=1 $PYTHON run_agent.py ..."
+fi
+unset AUTO_APPROVE
 
 for port_and_name in "$MOCK_PORT:mock_env" "$BUS_PORT:approval bus"; do
   port="${port_and_name%%:*}"; name="${port_and_name#*:}"
@@ -78,9 +105,16 @@ wait_for "http://localhost:$MOCK_PORT/alerts" "mock_env"
 wait_for "http://localhost:$BUS_PORT/events" "approval bus"
 
 # Deterministic scenario every time — this is what makes the demo repeatable.
-curl -sf -X POST "http://localhost:$MOCK_PORT/reset" >/dev/null
-curl -sf -X POST "http://localhost:$BUS_PORT/reset" >/dev/null
-log "scenario reset — checkout-service is degraded on v1.4.2"
+# But NOT when resuming: a reset would clear the bus and destroy the continuous
+# timeline that the session-survival demo exists to show, and re-break the
+# service underneath a run that is mid-remediation.
+if [ "$resuming" = "yes" ]; then
+  log "resuming — leaving the scenario and the event timeline intact"
+else
+  curl -sf -X POST "http://localhost:$MOCK_PORT/reset" >/dev/null
+  curl -sf -X POST "http://localhost:$BUS_PORT/reset" >/dev/null
+  log "scenario reset — checkout-service is degraded on v1.4.2"
+fi
 
 printf '\n\033[1m  Dashboard: http://localhost:%s/\033[0m\n' "$BUS_PORT"
 printf '  Approve in the dashboard when the run pauses. Ctrl-C stops everything.\n\n'
@@ -93,7 +127,7 @@ printf '  Approve in the dashboard when the run pauses. Ctrl-C stops everything.
 set +e
 MOCK_ENV_URL="http://localhost:$MOCK_PORT" \
 AGENT_BUS_URL="http://localhost:$BUS_PORT" \
-  "$PYTHON" -u run_agent.py "${@:---provider sim --subagents}" &
+  "$PYTHON" -u run_agent.py "$@" &
 agent_pid=$!
 wait "$agent_pid"
 agent_status=$?
