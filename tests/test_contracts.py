@@ -130,3 +130,40 @@ def test_dashboard_can_find_service_health_in_the_stream(env, bus):
     assert len(health) >= 2, "dashboard needs a before AND an after reading"
     assert health[0]["result"]["status"] == "degraded"
     assert health[-1]["result"]["status"] == "healthy"
+
+
+# --- the sandbox tool description ------------------------------------------
+def test_sandbox_description_carries_the_real_signatures():
+    """
+    A model that has to guess a signature guesses wrong. In a live run GPT-4o
+    burned three sandbox attempts on `deploy_times=`, a missing positional, and
+    a type error, and never produced the correlation score. The description is
+    generated from the code, so this also guards against drift.
+    """
+    import inspect
+
+    import diagnostics
+    from agent.registry import SANDBOX_TOOL_SCHEMA
+
+    desc = SANDBOX_TOOL_SCHEMA["function"]["description"]
+    for fn in (diagnostics.correlate_deploy_to_incident,
+               diagnostics.recommend_rollback_target):
+        assert f"{fn.__name__}{inspect.signature(fn)}" in desc, \
+            f"{fn.__name__}'s real signature is not shown to the model"
+
+
+def test_sandbox_description_shows_a_runnable_example():
+    from agent.registry import SANDBOX_EXAMPLE, SANDBOX_TOOL_SCHEMA
+    assert SANDBOX_EXAMPLE in SANDBOX_TOOL_SCHEMA["function"]["description"]
+    assert "PAYLOAD[" in SANDBOX_EXAMPLE and "RESULT =" in SANDBOX_EXAMPLE
+
+
+def test_the_documented_example_actually_runs(demo_payload):
+    """The example we hand the model must work verbatim in the real sandbox."""
+    from agent.registry import SANDBOX_EXAMPLE
+    from sandbox.runner import run_diagnostic
+
+    out = run_diagnostic(SANDBOX_EXAMPLE, demo_payload)
+    assert out["ok"], out["error"]
+    assert out["result"]["suspect"] == "v1.4.2"
+    assert out["result"]["rollback_target"] == "v1.4.1"

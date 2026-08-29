@@ -131,3 +131,21 @@ def test_environment_outage_is_reported_not_raised(env, bus, monkeypatch):
 def test_step_budget_is_enforced(env, bus):
     report, _ = _run(bus, approve=True, max_steps=2)
     assert report.steps <= 2
+
+
+def test_subagent_findings_carry_the_raw_log_lines(env, bus):
+    """
+    The main agent feeds these into the sandbox diagnostic. Without the raw
+    lines it passes the summary instead and scores the incident wrong.
+    """
+    _run(bus, approve=True, use_subagents=True)
+    logs = [e for e in bus.of("subagent_finished") if e["subagent"] == "logs"][0]["findings"]
+    assert isinstance(logs["lines"], list) and logs["lines"], "raw lines must travel with the summary"
+    assert all(isinstance(l, dict) and "message" in l for l in logs["lines"])
+
+    from diagnostics import correlate_deploy_to_incident
+    alerts = [e for e in bus.of("tool_result") if e["tool"] == "get_active_alerts"][0]["result"]
+    deploys = [e for e in bus.of("tool_result") if e["tool"] == "get_recent_deploys"][0]["result"]
+    out = correlate_deploy_to_incident(alerts[0]["fired_at"], deploys, logs["lines"])
+    assert out["version_referenced_in_error_logs"] is True
+    assert out["suspicion_score"] >= 0.7
