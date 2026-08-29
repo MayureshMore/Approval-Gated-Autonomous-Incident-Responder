@@ -226,14 +226,13 @@ The project now sits at the **repo root** (not nested in `incident-responder/`),
 If you have a local repo pointing at the same remote with a different layout, our
 histories will disagree about where every file lives. **Sync with me before pushing.**
 
-## 2. One-line fix I need from you (visible in the demo)
-`approval_server.py` appends its **own** `approval_decision` event in `POST
-/decision`, and my gate emits one too — so the timeline renders **two "approved"
-rows per approval**. Harmless, but it looks sloppy on stage. It is your file, so I
-have not touched it. Either drop the server-side append, or dedupe by `request_id`
-in the dashboard.
+## 2. ~~Duplicate approval_decision~~ — DONE (fd656a1), verified
+You fixed it by round-tripping `request_id` through `POST /decision` and deduping
+on `e.request_id||e.action` in the dashboard. I ran my agent against your updated
+`approval_server.py` end to end: both decision events now carry the same
+`request_id`, so they collapse to one row. Nothing further needed.
 
-## 3. New events — two are worth rendering
+## 3. New events — you already render these (fd656a1). Kept here as the reference.
 All additive; the dashboard may ignore any of them without breaking.
 
 ```
@@ -270,21 +269,29 @@ this land:
 
 If the dashboard wipes state on a polling gap, this demo dies. Worth checking.
 
-## 5. Small ask for the bus
-Have `GET /decision` echo back the `request_id` it was passed. The agent already
-sends it and tolerates its absence, so nothing breaks today — it just closes a
-stale-approval edge case if one run ever gates two actions.
+## 5. ~~Echo request_id from GET /decision~~ — DONE (fd656a1)
+Confirmed working against my gate.
 
 ## 6. What I did NOT touch
 `mock_env/`, `approval_server.py`, `ui/dashboard.html`, `DEMO_SCRIPT.md` are
 untouched and still yours. I only added a contract addendum to `EVENT_CONTRACT.md`.
 
 ## 7. Your critical path, given where I am
+- **B6 (record the demo twice) is now the top priority.** The gateway is live and
+  the whole loop is green *right now* — capture it while it is. Record the real
+  one (`--provider truefoundry --subagents`) and a `--provider sim` one as
+  insurance; sim needs no API key, so it can never be blocked by the gateway.
 - **B5 (Qodo) is the cheapest track we have and it is not started.** Nearly free
   points; do not skip it.
-- **B2 (dashboard polish)** — the `sandbox_exec` box is the highest-value single
-  addition.
-- **B6 (record the demo twice)** — do this *before* chasing polish. We have a
-  working end-to-end run right now; capture it while it is green. `--provider sim`
-  needs no API key, so a recording can be made at any time without depending on the
-  gateway.
+- **Layer 4 beat** — worth adding to the recording: kill the agent at the approval
+  card, `--resume last`, watch it continue in the same timeline. Ten seconds, and
+  it is a harness feature nobody else will have.
+
+## 8. Live gateway config (if you want to run the real agent yourself)
+Working, verified. Put your own PAT in `.env` (gitignored):
+```
+TRUEFOUNDRY_API_KEY=<your PAT>
+TRUEFOUNDRY_BASE_URL=https://pacific.truefoundry.cloud/api/llm
+TRUEFOUNDRY_MODEL=ms-openai-main/gpt-4o
+```
+The `ms-` prefix is required. `--provider sim` still needs no key at all.
