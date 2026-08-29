@@ -156,36 +156,52 @@ touches this one; most of it is now addressed (see B3 below).
   actually selected for *this* repo during install (easy to pick the wrong
   repo in the picker), or was installed on a different account than
   `MayureshMore`, or the webhook isn't firing for some other reason.
-  **Next action:** ask Mayuresh to check
-  https://github.com/settings/installations (or his org's equivalent) and
-  confirm this specific repo is listed under the Qodo Merge installation's
-  repository access — don't just take "I installed it" at face value, verify
-  the repo picker actually included this one. PR #1 is left open and is the
-  natural place to re-check once he confirms/fixes the install — no need to
-  open a new one.
+  **Second update, same session — Mayuresh confirmed the repo IS listed under
+  the Qodo installation, re-checked anyway, still zero activity.** Re-ran the
+  same checks (`gh api .../issues/1/comments` → 0, `.../pulls/1/reviews` → 0,
+  `gh pr checks 1` → "no checks reported", timeline still only shows
+  `committed`) *after* Mayuresh confirmed repo access was correct. So it's
+  **not** a repo-selection mistake — something else is broken: could be the
+  webhook delivery failing silently, the app's PR-review trigger not firing
+  on this account/plan tier, a delay far longer than the "minutes" the docs
+  promise, or an app-side issue unrelated to anything either of us configured.
+  **Decision: deprioritized per Zeel's call.** Not spending more time
+  debugging a third-party app's webhook from the outside with no visibility
+  into its logs. **What Mayuresh should check when he has a minute** (since he
+  has the admin access this needs): GitHub repo Settings → Webhooks → look for
+  a Qodo/PR-Agent webhook entry and check its "Recent Deliveries" tab for
+  failed deliveries with an error code — that's the one piece of diagnostic
+  info neither of us can see from outside. PR #1 stays open for whenever it's
+  revisited; no need to open a new one. **Everything else in this doc
+  proceeded without waiting on this.**
 
-- **B6 — Demo: NOT STARTED.** Person A's advice (in his handoff) is to record
-  this *before* chasing further polish, since `--provider sim` gives a
-  reliable, API-key-free green run right now. Worth also showing the Layer 4
-  resume beat (kill mid-approval, `--list-runs`, `--resume last`) since the
-  dashboard now specifically supports it (see B3.4).
+- **B6 — Demo: script updated, not yet recorded.** Updated `DEMO_SCRIPT.md`
+  this session: added the exact copy-pasteable start command next to
+  "[start the run]", a callout that three subagents run in parallel, and a
+  full new "Bonus beat — session survival (Layer 4)" section with the
+  narration + exact commands for the kill/list-runs/resume sequence —
+  written from the real verified run above, not speculatively. Also added
+  "session survival" to the Harness/DGX talking points. Actual video/screen
+  recording still needs to happen — that's on Zeel (needs a screen + mic,
+  which I can't do from here). Person A's advice stands: record the
+  base flow first since `--provider sim` is a reliable, API-key-free green
+  run right now; the resume beat is a strong optional closer if there's time
+  in the 90s target.
 
 - **B7 — Blog: NOT STARTED.**
 
 ## Next steps (in priority order)
-1. **Ask Mayuresh to check https://github.com/settings/installations (or org
-   equivalent) and confirm this specific repo is actually selected** under
-   the Qodo Merge app's repository access — PR #1 has sat with zero Qodo
-   activity for 15+ minutes despite him saying he installed it, so something
-   in the install didn't take for this repo specifically. Re-check PR #1
-   once he's confirmed/fixed it; no need for a new PR.
+1. **Record the demo (B6)** — script is ready (`DEMO_SCRIPT.md`, includes the
+   resume beat), the flow is fully verified twice over. This is the top
+   priority now that Qodo is parked.
 2. Manually eyeball the dashboard in a browser at tablet width — the one
    verification this session's tooling can't do.
-3. Record the demo (B6) — Person A's advice is to do this *before* chasing
-   more polish, since `--provider sim` gives a reliable green run right now.
-   **The Layer 4 resume beat is now fully demo-ready** (see below) — include
-   it.
-4. Draft blog (B7).
+3. Draft blog (B7).
+4. **Qodo (B5), deprioritized, not forgotten:** whenever Mayuresh has a
+   minute, ask him to check GitHub repo Settings → Webhooks → the Qodo
+   webhook's "Recent Deliveries" for a failure code — that's the only
+   diagnostic neither of us can see from outside. Re-check PR #1 once
+   there's something to check.
 
 ## Layer 4 resume demo — verified for real this session (not just synthetic)
 Ran the full sequence Person A documented, for real, end-to-end:
@@ -218,6 +234,13 @@ Ran the full sequence Person A documented, for real, end-to-end:
 **This demo beat is ready to record as-is.**
 
 ## Files touched this session
+- `DEMO_SCRIPT.md` (this pass) — added the exact start command, a subagents
+  callout, and the full "Bonus beat — session survival" section with the
+  verified resume-demo narration/commands; added "session survival" to the
+  Harness/DGX talking points.
+- `ui/dashboard.html` (on branch `feature/dashboard-provider-badge`, PR #1) —
+  small provider badge in the header (shows `sim`/`truefoundry`/etc. from
+  `run_started.provider`), opened as the Qodo test PR.
 - `approval_server.py` — `request_id` storage/echo fix (B3.2/B3.5).
 - `ui/dashboard.html` — `run_resumed` rendering, `request_id`-based dedup,
   `sendDecision`/button wiring for `request_id`, fetch-failure resilience fix.
