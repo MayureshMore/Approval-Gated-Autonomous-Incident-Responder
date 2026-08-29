@@ -70,6 +70,13 @@ class RecordingBus:
         self.events.append(ev)
         return ev
 
+    def replay(self, history: list[dict]) -> int:
+        """Mirror EventBus.replay: seed history without duplicating it."""
+        if not history:
+            return 0
+        self.events = list(history)
+        return len(history)
+
     def kinds(self) -> list[str]:
         return [e["kind"] for e in self.events]
 

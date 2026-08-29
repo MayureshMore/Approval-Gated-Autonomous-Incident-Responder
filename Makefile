@@ -30,8 +30,10 @@ demo:
 demo-live:
 	scripts/demo.sh --provider truefoundry --subagents
 
+# No --provider: the checkpoint decides, so a resumed gateway run stays on the
+# gateway. Override explicitly only if you know it is the same provider.
 demo-resume:
-	scripts/demo.sh --provider sim --resume last
+	scripts/demo.sh --resume last
 
 reset:
 	@curl -sf -X POST localhost:8000/reset >/dev/null && echo "mock_env reset"

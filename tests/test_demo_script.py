@@ -24,6 +24,18 @@ def source() -> str:
         return f.read()
 
 
+def _agent_invocation(body: str) -> int:
+    """Offset of the line that actually starts the agent.
+
+    Not the first mention of run_agent.py — the AUTO_APPROVE warning names it
+    too, and anchoring on that silently inverts every ordering assertion.
+    """
+    for line in body.splitlines():
+        if "-u run_agent.py" in line:
+            return body.index(line)
+    raise AssertionError("no agent invocation found in the launcher")
+
+
 @pytest.fixture(scope="module")
 def body(source) -> str:
     """Executable lines only — the header comment mentions the same identifiers
@@ -62,12 +74,23 @@ def test_waits_for_both_services_before_starting_the_agent(body):
     calls = [l for l in body.splitlines() if l.startswith("wait_for ")]
     assert len(calls) == 2, f"expected a health wait per service, got {calls}"
     assert any("/alerts" in c for c in calls) and any("/events" in c for c in calls)
-    assert body.index('wait_for "http') < body.index("run_agent.py")
+    assert body.index('wait_for "http') < _agent_invocation(body)
 
 
 def test_resets_the_scenario_for_determinism(body):
     assert body.count("/reset") == 2, "both the environment and the bus must be reset"
-    assert body.rindex("/reset") < body.index("run_agent.py"), "reset before the run"
+    assert body.rindex("/reset") < _agent_invocation(body), "reset before the run"
+
+
+def test_resume_does_not_reset_the_scenario(body):
+    """
+    Resetting on resume would clear the bus and re-break the service underneath a
+    run that is mid-remediation — destroying the continuous timeline that the
+    session-survival demo exists to show.
+    """
+    assert 'resuming="yes"' in body and '"$resuming" = "yes"' in body
+    guard = body.index('if [ "$resuming" = "yes" ]')
+    assert guard < body.rindex("/reset"), "the reset must sit behind the resume guard"
 
 
 def test_refuses_to_start_on_an_occupied_port(source):
@@ -75,14 +98,42 @@ def test_refuses_to_start_on_an_occupied_port(source):
     assert "already in use" in source
 
 
-def test_defaults_to_the_no_api_key_provider(source):
+def test_defaults_to_the_no_api_key_provider(body):
     """The default path must work with no credentials, as demo insurance."""
-    assert "--provider sim" in source
+    assert "--provider sim" in body
 
 
-def test_forwards_arguments_to_the_agent(source):
+def test_forwards_arguments_to_the_agent(body):
     """--provider truefoundry / --resume last must reach run_agent.py."""
-    assert '"${@:---provider sim --subagents}"' in source
+    assert '-u run_agent.py "$@"' in body
+
+
+def test_default_arguments_are_separate_argv_elements(body):
+    """
+    Regression: "${@:-a b c}" expands to ONE argument, so argparse rejected the
+    documented no-argument invocation. Set the positional parameters instead.
+    """
+    assert '"${@:-' not in body, 'a quoted ${@:-default} collapses into one argv element'
+    assert 'set -- --provider sim --subagents' in body
+
+
+def test_does_not_inherit_auto_approve(body):
+    """
+    The launcher tells the operator to approve in the dashboard, so it must not
+    inherit AUTO_APPROVE=1 from the shell or .env — that would execute every
+    destructive action with no human while the UI still claims to be gating.
+    """
+    assert "unset AUTO_APPROVE" in body
+    assert body.index("unset AUTO_APPROVE") < _agent_invocation(body)
+
+
+def test_port_probe_does_not_depend_on_an_undeclared_tool(body):
+    """
+    `! nc -z ...` reports command-not-found as success, so a machine without nc
+    would call every port free and run against somebody else's server.
+    """
+    assert "nc -z" not in body, "nc is not a declared prerequisite"
+    assert "connect_ex" in body, "probe with the interpreter we already validated"
 
 
 def test_agent_runs_in_background_so_ctrl_c_works_at_the_approval_gate(body):
