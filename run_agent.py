@@ -2,14 +2,17 @@
 """
 Ripcord — the incident responder, CLI entrypoint.
 
-    python run_agent.py --provider sim              # no API key needed
-    python run_agent.py --provider openai --subagents --github
-    python run_agent.py --selftest                  # verify wiring, run nothing
+    python run_agent.py --provider truefoundry --subagents   # the primary runtime
+    python run_agent.py --provider sim                       # no API key needed
+    python run_agent.py --selftest                           # verify wiring, run nothing
 
 Providers
-  sim        deterministic scripted run. Demo insurance + CI. Needs no key.
-  openai     OPENAI_API_KEY   (MODEL, default gpt-4o)
-  anthropic  ANTHROPIC_API_KEY (MODEL, default claude-sonnet-4-5)
+  truefoundry  PRIMARY. TRUEFOUNDRY_API_KEY (+ TRUEFOUNDRY_BASE_URL,
+               TRUEFOUNDRY_MODEL). OpenAI-compatible gateway; every call is
+               routed and traced by TrueFoundry.
+  sim          deterministic scripted run. Demo insurance + CI. Needs no key.
+  openai       OPENAI_API_KEY    (MODEL, default gpt-4o)
+  anthropic    ANTHROPIC_API_KEY (MODEL, default claude-sonnet-4-5)
 
 Approval
   AGENT_BUS_URL=http://localhost:8500   approve in the dashboard  (demo path)
@@ -29,7 +32,10 @@ from agent.core import IncidentAgent
 from agent.registry import audit
 
 
-def make_provider(name: str):
+def make_provider(name: str, run_id: str | None = None):
+    if name == "truefoundry":
+        from agent.providers.truefoundry import TrueFoundryProvider
+        return TrueFoundryProvider(run_id=run_id)
     if name == "sim":
         from agent.providers.sim import SimProvider
         return SimProvider()
@@ -73,7 +79,7 @@ def preflight(require_env: bool = True) -> list[str]:
 def main() -> int:
     p = argparse.ArgumentParser(description="Ripcord incident responder")
     p.add_argument("--provider", default=os.environ.get("PROVIDER", "sim"),
-                   choices=["sim", "openai", "anthropic"])
+                   choices=["truefoundry", "sim", "openai", "anthropic"])
     p.add_argument("--subagents", action="store_true",
                    help="fan out parallel read-only investigators first")
     p.add_argument("--github", action="store_true",
@@ -82,11 +88,34 @@ def main() -> int:
     p.add_argument("--approval-timeout", type=int, default=300)
     p.add_argument("--selftest", action="store_true", help="run preflight and exit")
     p.add_argument("--json", action="store_true", help="print the run report as JSON")
+    p.add_argument("--list-models", action="store_true",
+                   help="list the models this TrueFoundry gateway exposes, then exit")
     args = p.parse_args()
 
-    problems = preflight(require_env=not args.selftest or True)
+    if args.list_models:
+        from agent.providers.truefoundry import list_models
+        from agent.providers.truefoundry import preflight as tfy_preflight
+        try:
+            for m in list_models():
+                print(m)
+            return 0
+        except Exception as exc:
+            print(f"could not list models: {exc}")
+            print(json.dumps(tfy_preflight(), indent=2))
+            return 1
+
+    problems = preflight(require_env=True)
+    if args.provider == "truefoundry":
+        from agent.providers.truefoundry import preflight as tfy_preflight
+        tfy = tfy_preflight()
+        if not tfy["ready"]:
+            problems.append(f"truefoundry gateway: {tfy.get('error')}")
+
     if args.selftest:
-        print(json.dumps({"registry": audit(), "problems": problems}, indent=2))
+        report = {"registry": audit(), "problems": problems}
+        if args.provider == "truefoundry":
+            report["truefoundry"] = tfy
+        print(json.dumps(report, indent=2))
         print("\nSELFTEST:", "FAIL" if problems else "PASS")
         return 1 if problems else 0
     if problems:
@@ -97,7 +126,7 @@ def main() -> int:
 
     bus = EventBus()
     agent = IncidentAgent(
-        provider=make_provider(args.provider),
+        provider=make_provider(args.provider, run_id=bus.run_id),
         bus=bus,
         gate=ApprovalGate(bus, timeout_s=args.approval_timeout),
         include_github=args.github,

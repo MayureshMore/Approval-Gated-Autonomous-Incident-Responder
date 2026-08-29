@@ -4,9 +4,10 @@
 > session runs out of context or usage you can open a fresh one, paste
 > "Read PERSON_A_AGENT.md and continue", and lose nothing.
 >
-> **Status: A1–A6 built and green. 83 tests passing. Layer 0 + Layer 1 + subagents
-> demo end-to-end today with no API key.** Remaining: A2 (TrueForge port — blocked,
-> see below), A6 live PR (needs `gh` + a repo), A7 Slack.
+> **Status: A1–A6 built and green. 97 tests passing. Layer 0 + Layer 1 + subagents
+> demo end-to-end today with no API key. A2 (TrueFoundry) is CODE-COMPLETE and
+> waiting only on an API key.** Remaining: fire A2 against the live gateway,
+> A6 live PR (needs `gh` + a repo), A7 Slack.
 > _Last updated: 2026-08-29._
 
 ## Mission
@@ -40,9 +41,37 @@ the dashboard. checkout-service goes 34% → 0.4% error rate.
 .venv/bin/python -m pytest                  # 83 tests
 ```
 
-**Providers** — `--provider sim` (no key, deterministic, this is the demo path),
-`openai` (`OPENAI_API_KEY`), `anthropic` (`ANTHROPIC_API_KEY`). Same loop, same
-gate, same sandbox for all three; only token generation differs.
+**Providers** — `truefoundry` (**primary**, see below), `sim` (no key,
+deterministic, the demo safety net), `openai`, `anthropic`. Same loop, same gate,
+same sandbox for all four; only token generation differs.
+
+### TrueFoundry AI Gateway (the primary runtime)
+
+The gateway is **OpenAI-compatible**, so this was a configuration job, not a
+rewrite — `TrueFoundryProvider` subclasses `OpenAIProvider`. Verified against
+`pacific.truefoundry.cloud`: `POST /api/llm/chat/completions` and
+`GET /api/llm/models` both route and return 401 for a bad token, so the base URL
+is right and only a key is missing.
+
+```bash
+cp .env.example .env        # then fill in TRUEFOUNDRY_API_KEY
+export TRUEFOUNDRY_API_KEY=...
+export TRUEFOUNDRY_BASE_URL=https://pacific.truefoundry.cloud/api/llm
+
+python run_agent.py --list-models                    # what this tenant exposes
+export TRUEFOUNDRY_MODEL=openai-main/gpt-4o          # a real id from that list
+python run_agent.py --provider truefoundry --selftest        # expect PASS
+AGENT_BUS_URL=http://localhost:8500 \
+  python run_agent.py --provider truefoundry --subagents     # the demo
+```
+
+Model ids are `{provider-account}/{model}` — **`gpt-4o` alone will 404**. The
+preflight checks the configured model against the gateway's list and refuses to
+start with a wrong one, so you find out before you are on stage, not during.
+
+Every call carries an `X-TFY-METADATA` header tagging the run id, so a run on the
+dashboard is traceable to its cost and latency in TrueFoundry's observability —
+worth showing the judges alongside the timeline.
 
 ---
 
@@ -56,11 +85,11 @@ gate, same sandbox for all three; only token generation differs.
 | `agent/bus.py` | Event emission per EVENT_CONTRACT (HTTP + file + console). |
 | `agent/registry.py` | One source of truth for tools; `audit()` catches drift. |
 | `agent/subagents.py` | 3 parallel read-only investigators, merged. |
-| `agent/providers/` | `sim` (scripted), `openai`, `anthropic`, `base` (protocol). |
+| `agent/providers/` | `truefoundry` (primary), `sim` (scripted), `openai`, `anthropic`, `base` (protocol). |
 | `sandbox/runner.py` | Parent half of code exec + `REFERENCE_DIAGNOSTIC`. |
 | `sandbox/bootstrap.py` | Runs **inside** the child; locks the process down. |
 | `integrations/github_ops.py` | Real revert PR. Argv-only, temp clone, dry-run default. |
-| `tests/` | 83 tests. `test_agent_e2e.py` holds THE invariant. |
+| `tests/` | 97 tests. `test_agent_e2e.py` holds THE invariant. |
 
 Unchanged from the original scaffold: `tools.py`, `tool_schemas.py`,
 `diagnostics.py`, `agent_prompt.md`. `fallback_agent.py` still works; `run_agent.py`
@@ -95,13 +124,12 @@ tells you the script needs updating.
 
 - [x] **A1 — Prove the loop.** Done, and generalised: `run_agent.py` beats the
       original `fallback_agent.py` (structured events, run report, preflight).
-- [ ] **A2 — Port to TrueForge.** *Blocked: no TrueForge SDK or docs on this
-      machine.* De-risked instead — `agent/providers/base.py` is a 3-method
-      protocol, so porting is one new class (~40 lines), touching neither the
-      loop, the gate, nor the sandbox. **When you get harness access:** write
-      `agent/providers/trueforge.py`, register schemas from
-      `registry.build_registry()`, point its approval hook at
-      `registry.REQUIRES_APPROVAL`, set system prompt to `agent_prompt.md`.
+- [~] **A2 — TrueFoundry gateway.** Code complete: `agent/providers/truefoundry.py`,
+      wired into `run_agent.py`, 14 tests, preflight + `--list-models`.
+      **Waiting only on `TRUEFOUNDRY_API_KEY`.** The provider protocol paid for
+      itself — the port was one subclass, and the loop, gate and sandbox were
+      untouched. First thing to do when the key lands: `--list-models`, then
+      `--selftest`, then a live run.
 - [x] **A3 — Approval gate.** `agent/approval.py`. Emits `awaiting_approval`,
       blocks, polls, resumes. Request-ids stop a stale decision approving a later
       action.
@@ -152,6 +180,12 @@ just closes a stale-approval edge case if we ever gate two actions in one run.
 
 ## Where the bodies are buried
 
+- **It is TrueFoundry, not "TrueForge".** The original plan docs had the name
+  wrong throughout; corrected repo-wide. It is an LLM *gateway* (an
+  OpenAI-compatible proxy), not an agent harness SDK — which is why A2 turned out
+  to be a config change. Adjust the pitch accordingly: the harness story is our
+  own sandbox + approval gate + subagents, with TrueFoundry as the routed,
+  traced, model-agnostic front door.
 - **Python 3.12, not 3.14.** The pinned deps have no 3.14 wheels. `.venv` is 3.12.
 - **`PYTHONPATH=.` when starting mock_env** — `uvicorn mock_env.main:app` needs it.
 - **Sim provider is not a mock of the loop.** It drives the real gate, the real
@@ -165,6 +199,6 @@ just closes a stale-approval edge case if we ever gate two actions in one run.
 
 ## If you are resuming cold
 1. `.venv/bin/python run_agent.py --selftest` → expect `PASS`.
-2. `.venv/bin/python -m pytest` → expect 83 passed.
+2. `.venv/bin/python -m pytest` → expect 97 passed.
 3. Do a full dashboard run (commands at the top). If that's green, the demo is safe.
-4. Then pick up A2 (needs harness access) or A6-live (needs `gh`).
+4. Then: A2 live (needs `TRUEFOUNDRY_API_KEY`) or A6 live (needs `gh` + a repo).

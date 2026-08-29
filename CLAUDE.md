@@ -5,7 +5,7 @@ An AI agent that investigates a production alert using **read-only** tools in a
 sandbox, forms a diagnosis, proposes a remediation, and **pauses for human
 approval before any destructive action** — then executes on approval.
 
-Hackathon: Agent Harness Hackathon (TrueForge). Deadline **18:00 today**. Repo MUST stay open source.
+Hackathon: Agent Harness Hackathon (TrueFoundry). Deadline **18:00 today**. Repo MUST stay open source.
 
 ## Winning thesis (read this)
 The DGX/Harness track is judged on *"the harness doing the work, not sitting
@@ -48,7 +48,7 @@ via MCP-over-OAuth. This is the difference between a toy and a contender.
 
 ## Architecture
 ```
-[ Agent on TrueForge ] --tools--> [ tools.py ] --HTTP--> [ mock_env (telemetry + mock actions) ]
+[ Agent on TrueFoundry ] --tools--> [ tools.py ] --HTTP--> [ mock_env (telemetry + mock actions) ]
         |                         [ diagnostics.py runs in SANDBOX ]
         |                         [ integrations/github_ops.py -> REAL revert PR (Layer 2) ]
         |                         [ integrations/slack_ops.py   -> REAL message   (Layer 3) ]

@@ -5,7 +5,7 @@ writes and runs its own diagnostic **in a sandbox**, and then **stops and asks a
 human before any destructive action** — executing only on approval, then
 confirming recovery.
 
-Built for the Agent Harness Hackathon. Primary runtime = TrueForge harness; the
+Built for the Agent Harness Hackathon. Primary runtime = TrueFoundry harness; the
 repo also ships a self-contained path so there is always a working demo.
 
 ---
@@ -39,12 +39,35 @@ Reset between runs:
 
 **Providers.** `--provider sim` is deterministic and needs no API key — it drives
 the *real* gate, sandbox and environment, with only token generation scripted.
-`--provider openai` (`OPENAI_API_KEY`) and `--provider anthropic`
-(`ANTHROPIC_API_KEY`) run the identical loop.
+`--provider truefoundry` is the primary runtime (below); `--provider openai` and
+`--provider anthropic` run the identical loop against those APIs directly.
+
+### Running on the TrueFoundry AI Gateway
+
+The gateway is OpenAI-compatible, so every model call is routed, authenticated
+and **traced** by TrueFoundry, and swapping the underlying model is a config
+change rather than a code change.
+
+```bash
+cp .env.example .env                       # fill in TRUEFOUNDRY_API_KEY
+export TRUEFOUNDRY_API_KEY=... \
+       TRUEFOUNDRY_BASE_URL=https://pacific.truefoundry.cloud/api/llm
+
+python run_agent.py --list-models          # what your tenant exposes
+export TRUEFOUNDRY_MODEL=openai-main/gpt-4o
+python run_agent.py --provider truefoundry --selftest
+AGENT_BUS_URL=http://localhost:8500 python run_agent.py --provider truefoundry --subagents
+```
+
+Gateway model ids are `{provider-account}/{model}` — bare `gpt-4o` will 404. The
+preflight validates the configured model against the gateway's own list and
+refuses to start on a mismatch, so a bad id surfaces before the demo rather than
+during it. Each request carries an `X-TFY-METADATA` header tagging the run id, so
+a run on the dashboard traces to its cost and latency in TrueFoundry.
 
 ```bash
 .venv/bin/python run_agent.py --selftest   # verify wiring before you present
-.venv/bin/python -m pytest                 # 83 tests
+.venv/bin/python -m pytest                 # 97 tests
 ```
 
 ---
@@ -89,7 +112,7 @@ untouched.
 | `agent/approval.py` | The approval gate (ui / cli / auto), fails closed |
 | `agent/registry.py` | One source of truth for tools; `audit()` catches drift |
 | `agent/subagents.py` | Three parallel read-only investigators, merged |
-| `agent/providers/` | `sim`, `openai`, `anthropic` behind one protocol |
+| `agent/providers/` | `truefoundry` (primary), `sim`, `openai`, `anthropic` behind one protocol |
 | `sandbox/runner.py` | Parent half of agent-written code execution |
 | `sandbox/bootstrap.py` | Runs *inside* the child; locks the process down |
 | `diagnostics.py` | The correlation maths the agent runs in the sandbox |
@@ -97,7 +120,7 @@ untouched.
 | `mock_env/` | The breakable prod stack (telemetry + mock actions) |
 | `approval_server.py` | Event bus + in-UI approval bridge + serves the dashboard |
 | `ui/dashboard.html` | The dashboard: timeline, approval card, before→after metrics |
-| `tests/` | 83 tests |
+| `tests/` | 97 tests |
 | `CLAUDE.md` | The plan: layers, cut-lines, tracks |
 | `TOOL_CONTRACT.md` / `EVENT_CONTRACT.md` | Frozen seams between the two workstreams |
 | `PERSON_A_AGENT.md` / `PERSON_B_INTERFACE.md` | Per-owner briefs and live status |
@@ -106,10 +129,10 @@ untouched.
 ## Status
 
 Layer 0 (mock loop), Layer 1 (sandboxed diagnostic) and subagents are **done and
-demoable**. Layer 2 (real GitHub revert PR) is written, hardened and tested but
-not yet fired against a live repo — it is dry-run until `GITHUB_REVERT_ENABLED=1`.
-The TrueForge port is pending harness access; see `PERSON_A_AGENT.md` for the
-current ledger.
+demoable**. The TrueFoundry gateway provider is code-complete and tested, waiting
+only on an API key. Layer 2 (real GitHub revert PR) is written, hardened and
+tested but not yet fired against a live repo — it stays dry-run until
+`GITHUB_REVERT_ENABLED=1`. See `PERSON_A_AGENT.md` for the current ledger.
 
 ## License / provenance
 Open source, as the hackathon requires. Mock telemetry is synthetic; no real

@@ -1,7 +1,7 @@
 """
 FALLBACK local agent (demo insurance).
 
-Primary path is the TrueForge harness. This is a self-contained agent loop using
+Primary path is the TrueFoundry harness. This is a self-contained agent loop using
 the OpenAI API directly, so you ALWAYS have a working demo even if harness wiring
 stalls. It implements the same investigate -> diagnose -> propose -> APPROVAL
 PAUSE -> execute flow, and emits events to ui/events.json so the dashboard renders.
