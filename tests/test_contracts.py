@@ -14,7 +14,7 @@ import tools
 from agent.bus import CONTRACT_KINDS, EXTENDED_KINDS
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-from agent.registry import REQUIRES_APPROVAL, build_registry
+from agent.registry import APPROVAL_REASON_PARAM, REQUIRES_APPROVAL, build_registry
 
 
 # --- TOOL_CONTRACT.md ------------------------------------------------------
@@ -61,7 +61,12 @@ def test_every_destructive_tool_is_gated():
 
 
 def test_schemas_and_implementations_agree():
-    """Every declared parameter must exist on the implementation's signature."""
+    """Every declared parameter must exist on the implementation's signature.
+
+    `reason` is the one exception: the harness injects it onto gated tools to
+    carry the model's justification to the human, and core.py strips it before
+    dispatch. test_harness_reason_never_reaches_a_tool covers that seam.
+    """
     impls, schemas = build_registry(include_github=True)
     for s in schemas:
         name = s["function"]["name"]
@@ -69,7 +74,52 @@ def test_schemas_and_implementations_agree():
         params = inspect.signature(impls[name]).parameters
         accepts_kwargs = any(p.kind == p.VAR_KEYWORD for p in params.values())
         if not accepts_kwargs:
+            declared -= {APPROVAL_REASON_PARAM} - set(params)
             assert declared <= set(params), f"{name}: schema declares {declared - set(params)}"
+
+
+def test_every_gated_tool_demands_a_reason():
+    """A human cannot approve what the agent has not explained."""
+    _, schemas = build_registry(include_github=True)
+    gated = [s["function"] for s in schemas if s["function"]["name"] in REQUIRES_APPROVAL]
+    assert gated, "no gated tools in the registry"
+    for fn in gated:
+        params = fn["parameters"]
+        assert APPROVAL_REASON_PARAM in params["properties"], f"{fn['name']} has no reason"
+        assert APPROVAL_REASON_PARAM in params["required"], f"{fn['name']}: reason is optional"
+
+
+def test_read_only_tools_are_not_burdened_with_a_reason():
+    _, schemas = build_registry(include_github=True)
+    for s in schemas:
+        fn = s["function"]
+        if fn["name"] not in REQUIRES_APPROVAL:
+            assert APPROVAL_REASON_PARAM not in fn["parameters"].get("properties", {}), fn["name"]
+
+
+def test_open_revert_pr_keeps_its_own_reason():
+    """It declares `reason` itself and puts it in the PR body — the harness must
+    not shadow it with a second definition or drop it from `required`."""
+    _, schemas = build_registry(include_github=True)
+    fn = next(s["function"] for s in schemas if s["function"]["name"] == "open_revert_pr")
+    assert "PR body" in fn["parameters"]["properties"][APPROVAL_REASON_PARAM]["description"]
+    assert fn["parameters"]["required"].count(APPROVAL_REASON_PARAM) == 1
+
+
+def test_harness_reason_never_reaches_a_tool():
+    """The injected `reason` must be stripped before dispatch — except on
+    open_revert_pr, whose implementation genuinely takes one."""
+    from agent.core import _impl_accepts
+
+    impls, schemas = build_registry(include_github=True)
+    for s in schemas:
+        name = s["function"]["name"]
+        if name not in REQUIRES_APPROVAL:
+            continue
+        accepts = _impl_accepts(impls[name], APPROVAL_REASON_PARAM)
+        assert accepts == (name == "open_revert_pr"), (
+            f"{name}: impl accepts reason={accepts}; core.py strips based on this, "
+            "so a mismatch means the call dies on an unexpected keyword")
 
 
 def test_reset_restores_the_degraded_scenario(env):

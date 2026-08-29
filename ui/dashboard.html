@@ -60,7 +60,11 @@
   #approval h2{color:var(--pending);border-color:var(--pending)}
   .approval-body{padding:16px}
   .action-line{font-size:15px;font-weight:600;margin-bottom:6px}
-  .reason{color:var(--muted);margin:8px 0 16px}
+  /* Rationales are now multi-line (agent/core.py falls back to the sandbox
+     verdict when a model states nothing), so keep the newlines and wrap
+     long tokens instead of letting the card overflow the panel. */
+  .reason{color:var(--muted);margin:8px 0 16px;white-space:pre-wrap;
+          overflow-wrap:anywhere;max-height:40vh;overflow-y:auto}
   .btns{display:flex;gap:10px}
   button{flex:1;padding:13px;border:none;border-radius:8px;font-weight:600;font-size:15px;cursor:pointer;
          min-height:48px;-webkit-tap-highlight-color:transparent}
