@@ -16,9 +16,19 @@ repo also ships a self-contained path so there is always a working demo.
 git clone https://github.com/MayureshMore/Approval-Gated-Autonomous-Incident-Responder.git
 cd Approval-Gated-Autonomous-Incident-Responder
 
-uv venv --python 3.12 .venv && uv pip install -r requirements.txt
-# (or: python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt)
+make setup     # uv venv --python 3.12 .venv && uv pip install -r requirements.txt
+make demo      # starts everything, resets the scenario, runs the agent
+```
 
+Then open **http://localhost:8500/**. `make demo` needs no API key — it uses the
+deterministic `sim` provider. `make demo-live` runs the same thing on a real
+model through the TrueFoundry gateway, and `make demo-resume` replays the
+session-survival beat. Ctrl-C stops everything and releases the ports.
+
+<details>
+<summary>Running the three processes by hand instead</summary>
+
+```bash
 # terminal 1 — the breakable prod stack
 PYTHONPATH=. .venv/bin/uvicorn mock_env.main:app --port 8000
 
@@ -28,6 +38,7 @@ PYTHONPATH=. .venv/bin/uvicorn mock_env.main:app --port 8000
 # terminal 3 — the agent
 AGENT_BUS_URL=http://localhost:8500 .venv/bin/python run_agent.py --provider sim --subagents
 ```
+</details>
 
 Watch the dashboard: three subagents sweep metrics/logs/deploys in parallel, the
 agent runs a diagnostic in the sandbox, then hits a **Waiting for approval** card
@@ -68,7 +79,7 @@ latency in TrueFoundry's observability.
 
 ```bash
 .venv/bin/python run_agent.py --selftest   # verify wiring before you present
-.venv/bin/python -m pytest                 # 113 tests
+.venv/bin/python -m pytest                 # 127 tests
 ```
 
 ---
@@ -109,6 +120,8 @@ untouched.
 
 | Path | Purpose |
 |---|---|
+| `scripts/demo.sh` | One command to drive the whole demo; cleans up on Ctrl-C |
+| `Makefile` | `make demo` / `demo-live` / `demo-resume` / `test` / `reset` |
 | `run_agent.py` | CLI entrypoint — `--provider`, `--subagents`, `--github`, `--selftest` |
 | `agent/core.py` | The loop: investigate → diagnose → propose → **pause** → execute → verify |
 | `agent/approval.py` | The approval gate (ui / cli / auto), fails closed |
@@ -123,7 +136,7 @@ untouched.
 | `mock_env/` | The breakable prod stack (telemetry + mock actions) |
 | `approval_server.py` | Event bus + in-UI approval bridge + serves the dashboard |
 | `ui/dashboard.html` | The dashboard: timeline, approval card, before→after metrics |
-| `tests/` | 113 tests |
+| `tests/` | 127 tests |
 | `CLAUDE.md` | The plan: layers, cut-lines, tracks |
 | `TOOL_CONTRACT.md` / `EVENT_CONTRACT.md` | Frozen seams between the two workstreams |
 | `PERSON_A_AGENT.md` / `PERSON_B_INTERFACE.md` | Per-owner briefs and live status |
