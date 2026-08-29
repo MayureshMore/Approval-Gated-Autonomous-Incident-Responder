@@ -4,11 +4,10 @@
 > session runs out of context or usage you can open a fresh one, paste
 > *"Read PERSON_A_AGENT.md and continue"*, and lose nothing.
 >
-> **Status: 113 tests passing. Layers 0, 1 and 4 plus subagents demo end-to-end
-> today with no API key.** The TrueFoundry gateway provider is code-complete and
-> the key authenticates — but **the account has no models provisioned**, which is
-> a dashboard step (see A2). Layer 2 (real GitHub PR) is built and tested, not yet
-> fired live.
+> **Status: 113 tests passing. A2 IS LIVE — a full incident response ran on
+> GPT-4o through the TrueFoundry gateway, end to end, and recovered the service.**
+> Layers 0, 1 and 4 plus subagents also demo with no API key at all. Layer 2 (real
+> GitHub PR) is built and tested, not yet fired live.
 > _Last updated: 2026-08-29._
 
 ## Mission
@@ -48,9 +47,15 @@ automatically; existing env vars still win. Never paste a key into chat or a
 command line. `--selftest` prints config with secrets masked (`tfy_…8316 (70 chars)`).
 
 ### Providers
-`truefoundry` (primary), `sim` (no key, deterministic — the demo safety net),
-`openai`, `anthropic`. Same loop, same gate, same sandbox for all four; only token
-generation differs.
+`truefoundry` (primary, **live on `ms-openai-main/gpt-4o`**), `sim` (no key,
+deterministic — the demo safety net), `openai`, `anthropic`. Same loop, same gate,
+same sandbox for all four; only token generation differs.
+
+```bash
+# the live demo, on a real model through the gateway
+AGENT_BUS_URL=http://localhost:8500 .venv/bin/python run_agent.py \
+    --provider truefoundry --subagents
+```
 
 ---
 
@@ -130,28 +135,28 @@ mid-demo to show there is nothing up our sleeve.
 
 - [x] **A1 — Prove the loop.** Done, and generalised: `run_agent.py` beats the
       original `fallback_agent.py` (structured events, run report, preflight).
-- [~] **A2 — TrueFoundry gateway.** Code complete, 15 tests. **The key
-      authenticates but the account exposes zero models.**
-      - Symptom: `GET /api/llm/models` → `{"data":[]}`; every completion → 403
-        *"User m_more1@u.pacific.edu is not authorized to access model X or model
-        does not exist"*.
-      - **This is a dashboard step, not a code bug.** Go to
-        https://pacific.truefoundry.cloud/gateway-onboarding and add a provider
-        account (e.g. OpenAI, using an OpenAI key) so the gateway has a model to
-        route to. Then:
-        ```bash
-        .venv/bin/python run_agent.py --list-models        # must be non-empty
-        # put a real id in .env as TRUEFOUNDRY_MODEL, e.g. openai-main/gpt-4o
-        .venv/bin/python run_agent.py --provider truefoundry --selftest   # expect PASS
+- [x] **A2 — TrueFoundry gateway. LIVE AND VERIFIED.** A full incident response
+      ran on GPT-4o through the gateway and recovered the service.
+      - **Verified config** (already in `.env`):
         ```
-      - Model ids are `{provider-account}/{model}` — **bare `gpt-4o` 404s.** The
-        preflight validates the configured id against the gateway's own list and
-        refuses to start on a mismatch, so this surfaces before the demo.
+        TRUEFOUNDRY_BASE_URL=https://pacific.truefoundry.cloud/api/llm
+        TRUEFOUNDRY_MODEL=ms-openai-main/gpt-4o
+        ```
+        `https://gateway.truefoundry.ai` also works and returns the same two
+        models; ours is kept because it is the one we have run against.
+      - **The `ms-` prefix is not optional.** Ids are `ms-openai-main/gpt-4o` and
+        `ms-openai-main/gpt-4o-mini`. `openai-main/gpt-4o` and bare `gpt-4o` both
+        403. Preflight validates the id against the gateway's own list and refuses
+        to start on a mismatch, so this cannot bite you on stage.
       - Every call sends `X-TFY-METADATA` tagging the run id, so a dashboard run
         traces to its cost and latency in TrueFoundry's observability.
-      - **If onboarding can't be completed in time:** demo with `--provider sim`.
-        It drives the real gate, real sandbox and real environment; only token
-        generation is scripted. Nothing about the safety story is weakened.
+      - `--model ms-openai-main/gpt-4o-mini` overrides per run (cheaper rehearsals).
+      - **The earlier 403 was an unprovisioned account**, fixed by adding the
+        `ms-openai-main` provider account in the dashboard. Preflight now names
+        that failure explicitly if it recurs.
+      - **Fallback stays valid:** `--provider sim` needs no key and drives the real
+        gate, sandbox and environment. If the gateway wobbles mid-demo, switch
+        providers and nothing about the safety story is weakened.
 - [x] **A3 — Approval gate.** Emits `awaiting_approval`, blocks, polls, resumes.
       Request-ids stop a stale decision approving a later action.
 - [x] **A4 — Sandbox (Layer 1).** Real process isolation, not a claim.

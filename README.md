@@ -49,25 +49,26 @@ and **traced** by TrueFoundry, and swapping the underlying model is a config
 change rather than a code change.
 
 ```bash
-cp .env.example .env                       # fill in TRUEFOUNDRY_API_KEY
-export TRUEFOUNDRY_API_KEY=... \
-       TRUEFOUNDRY_BASE_URL=https://pacific.truefoundry.cloud/api/llm
+cp .env.example .env        # then paste your TrueFoundry PAT into TRUEFOUNDRY_API_KEY
 
-python run_agent.py --list-models          # what your tenant exposes
-export TRUEFOUNDRY_MODEL=openai-main/gpt-4o
+python run_agent.py --list-models                    # what your tenant exposes
 python run_agent.py --provider truefoundry --selftest
 AGENT_BUS_URL=http://localhost:8500 python run_agent.py --provider truefoundry --subagents
 ```
 
-Gateway model ids are `{provider-account}/{model}` — bare `gpt-4o` will 404. The
-preflight validates the configured model against the gateway's own list and
-refuses to start on a mismatch, so a bad id surfaces before the demo rather than
-during it. Each request carries an `X-TFY-METADATA` header tagging the run id, so
-a run on the dashboard traces to its cost and latency in TrueFoundry.
+Secrets live in `.env` (gitignored); `run_agent.py` loads it automatically and
+`--selftest` prints config with keys masked.
+
+Gateway model ids are `{provider-account}/{model}` — a bare `gpt-4o` will 403. The
+preflight validates the configured id against the gateway's own list and refuses
+to start on a mismatch, so a bad id surfaces before the demo rather than during
+it. `--model <id>` overrides per run. Each request carries an `X-TFY-METADATA`
+header tagging the run id, so a run on the dashboard traces to its cost and
+latency in TrueFoundry's observability.
 
 ```bash
 .venv/bin/python run_agent.py --selftest   # verify wiring before you present
-.venv/bin/python -m pytest                 # 97 tests
+.venv/bin/python -m pytest                 # 113 tests
 ```
 
 ---
@@ -101,6 +102,7 @@ untouched.
 | The diagnostic really is sandboxed | `tests/test_sandbox.py` — network, subprocess, filesystem, secrets, CPU, memory |
 | The gate fails closed | `tests/test_approval.py` — timeout, dead bus, interrupt, non-tty |
 | A rejection is respected | `test_rejected_run_leaves_production_untouched` |
+| Kill it mid-incident and it resumes, gate intact | `test_resume_still_asks_before_the_destructive_action`, `test_resume_honours_a_rejection_from_before_the_crash` |
 | The seam with the dashboard holds | `tests/test_contracts.py` — every field in `TOOL_CONTRACT.md` / `EVENT_CONTRACT.md` |
 
 ## What's where
@@ -112,6 +114,7 @@ untouched.
 | `agent/approval.py` | The approval gate (ui / cli / auto), fails closed |
 | `agent/registry.py` | One source of truth for tools; `audit()` catches drift |
 | `agent/subagents.py` | Three parallel read-only investigators, merged |
+| `agent/session.py` | Layer 4 — checkpoint and resume a killed run |
 | `agent/providers/` | `truefoundry` (primary), `sim`, `openai`, `anthropic` behind one protocol |
 | `sandbox/runner.py` | Parent half of agent-written code execution |
 | `sandbox/bootstrap.py` | Runs *inside* the child; locks the process down |
@@ -120,7 +123,7 @@ untouched.
 | `mock_env/` | The breakable prod stack (telemetry + mock actions) |
 | `approval_server.py` | Event bus + in-UI approval bridge + serves the dashboard |
 | `ui/dashboard.html` | The dashboard: timeline, approval card, before→after metrics |
-| `tests/` | 97 tests |
+| `tests/` | 113 tests |
 | `CLAUDE.md` | The plan: layers, cut-lines, tracks |
 | `TOOL_CONTRACT.md` / `EVENT_CONTRACT.md` | Frozen seams between the two workstreams |
 | `PERSON_A_AGENT.md` / `PERSON_B_INTERFACE.md` | Per-owner briefs and live status |
@@ -128,11 +131,12 @@ untouched.
 
 ## Status
 
-Layer 0 (mock loop), Layer 1 (sandboxed diagnostic) and subagents are **done and
-demoable**. The TrueFoundry gateway provider is code-complete and tested, waiting
-only on an API key. Layer 2 (real GitHub revert PR) is written, hardened and
-tested but not yet fired against a live repo — it stays dry-run until
-`GITHUB_REVERT_ENABLED=1`. See `PERSON_A_AGENT.md` for the current ledger.
+Layers 0 (mock loop), 1 (sandboxed diagnostic) and 4 (session survival), plus
+subagents, are **done and demoable** — with no API key at all, via `--provider
+sim`. The TrueFoundry gateway is **live and verified**: a full incident response
+has run on GPT-4o through it, end to end. Layer 2 (real GitHub revert PR) is
+written, hardened and tested but not yet fired against a live repo — it stays
+dry-run until `GITHUB_REVERT_ENABLED=1`. See `PERSON_A_AGENT.md` for the ledger.
 
 ## License / provenance
 Open source, as the hackathon requires. Mock telemetry is synthetic; no real
