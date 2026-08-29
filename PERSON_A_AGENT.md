@@ -4,11 +4,16 @@
 > session runs out of context or usage you can open a fresh one, paste
 > *"Read PERSON_A_AGENT.md and continue"*, and lose nothing.
 >
-> **Status: 113 tests passing. A2 IS LIVE — a full incident response ran on
-> GPT-4o through the TrueFoundry gateway, end to end, and recovered the service.**
-> Layers 0, 1 and 4 plus subagents also demo with no API key at all. Layer 2 (real
-> GitHub PR) is built and tested, not yet fired live.
-> _Last updated: 2026-08-29._
+> **Status: 113 tests passing. The demo works end to end on a real model.**
+> A full incident response has run on `ms-openai-main/gpt-4o` through the
+> TrueFoundry gateway: subagents → sandboxed diagnostic → approval pause →
+> approve → rollback → recovery (34% → 0.4%). Layers 0, 1 and 4 plus subagents
+> also demo with no API key at all via `--provider sim`.
+>
+> **The work is NOT on `master` yet — it is in PR #2.** Until that merges, a
+> judge cloning the repo gets no LICENSE and two live dashboard bugs. See
+> "Where we actually stand" below.
+> _Last updated: 2026-08-29, after Zeel's 7aceb8d._
 
 ## Mission
 Own everything the agent DOES. Win the DGX/Harness track by making the harness
@@ -130,6 +135,48 @@ sandbox run) and asks again. State is plain JSON in `runs/<run_id>.json` — ope
 mid-demo to show there is nothing up our sleeve.
 
 ---
+
+## Where we actually stand (checked against the repo, not the docs)
+
+`master` is at `7aceb8d`. **PR #2 (`person-a/agent-hardening`) is `MERGEABLE /
+CLEAN` and holds everything below.** PR #1 (Zeel's provider badge) is also clean;
+the two merge together in either order — verified in a throwaway worktree against
+the current master.
+
+What a judge cloning `master` right now gets, before PR #2 lands:
+
+| | On `master` today |
+|---|---|
+| 113 tests | ✅ pass |
+| LICENSE | ❌ missing, while `README.md` claims "open source" |
+| Approval card after a `/reset` | ❌ never reappears — `let decided` is module-level |
+| Agent-written code in the timeline | ❌ unescaped; `if n<len(x):` corrupts the row |
+| Record of the live GPT-4o run | ❌ absent |
+
+**Merging PR #1 and PR #2 is the single highest-value action left.** It is a
+minute of work and it is the difference between a judge seeing the fixed code or
+the buggy code.
+
+### Track reality
+| Track | State |
+|---|---|
+| Harness/DGX | ✅ Strong and real — sandbox, gate, subagents, Layer 4, live on GPT-4o |
+| UI/iPad | ⚠️ Strong *in PR #2*; two demo-path bugs still on master |
+| Qodo | ❌ **Dead.** Zero activity in ~25 min across two PRs, with the app confirmed installed. Parked by Zeel in 7aceb8d; I agree — it is a webhook problem we cannot see from outside, and it is worth far less than a recorded demo |
+| Blog | ⬜ Not started |
+| Bright Data | ⬜ Not attempted |
+
+### What is left, in order
+1. **Merge PR #1 and PR #2.**
+2. **Record the demo.** Still the biggest risk: everything is green *right now*
+   on a live gateway. `--provider sim` needs no key and cannot be broken by
+   network or quota, so a backup recording is always available.
+3. **Blog draft.** Unusually good material: two real bugs caught with
+   reproductions, GPT-4o writing its own diagnostic rather than reusing ours, and
+   resume-does-not-weaken-the-gate.
+
+Not worth starting now: Layer 2 live (a real GitHub write during an unrehearsed
+demo) and Slack (new surface area to demo). Both are honest as they stand.
 
 ## Task ledger
 
