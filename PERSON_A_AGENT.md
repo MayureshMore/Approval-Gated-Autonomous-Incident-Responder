@@ -184,6 +184,20 @@ mid-demo to show there is nothing up our sleeve.
 
 ## Where the bodies are buried
 
+- **A model that says nothing still has to explain itself.** Every gated tool
+  carries a harness-injected required `reason` parameter (`agent/registry.py`,
+  `_with_reason`). It is NOT a tool parameter — `core.py` strips it before
+  dispatch, because `rollback_service(service, to_version)` would die on an
+  unexpected keyword. `open_revert_pr` is the one exception: it declares its own
+  `reason` and puts it in the PR body, so there it is read and left in place.
+  The strip decides from the impl's signature, so a new gated tool cannot get
+  this wrong by omission.
+- **`RESULT`, not `result`.** The sandbox only reads uppercase `RESULT`. A
+  lowercase assignment used to return `ok: true, result: null` — a silent no-op
+  that reads as success. It now comes back with a hint naming the mistake.
+- **Sandbox errors name the failing line and dump the real PAYLOAD shape.** A
+  bare `TypeError: list indices must be integers` cost a live gateway run an
+  extra sandbox round-trip.
 - **It is TrueFoundry, not "TrueForge".** The original plan had the name wrong
   throughout; corrected repo-wide. It is an LLM **gateway** (an OpenAI-compatible
   proxy), not an agent-harness SDK — which is why A2 was a config change, not a
@@ -207,7 +221,7 @@ mid-demo to show there is nothing up our sleeve.
 ## If you are resuming cold
 1. `.venv/bin/python run_agent.py --selftest` → `PASS` with the mock env up, or
    `OK (wiring verified)` with it down. Only `FAIL` means the build is wrong.
-2. `.venv/bin/python -m pytest` → expect **153 passed**.
+2. `.venv/bin/python -m pytest` → expect **179 passed**.
 3. Do a full dashboard run (commands at the top). If that is green, the demo is safe.
 4. Then: A2 live (needs gateway onboarding) or A6 live (needs `gh` + a repo).
 
@@ -331,3 +345,56 @@ TRUEFOUNDRY_BASE_URL=https://pacific.truefoundry.cloud/api/llm
 TRUEFOUNDRY_MODEL=ms-openai-main/gpt-4o
 ```
 The `ms-` prefix is required. `--provider sim` still needs no key at all.
+
+---
+
+## 11. Full tester pass — what I ran and what it found
+
+Ran the whole stack as a tester, not as the author. Everything below was
+executed against live servers, not asserted from reading the code.
+
+**Green:**
+- `179 passed`
+- `--selftest` PASS with servers up
+- sim run: 8 steps, correlation 0.76, service healthy
+- **live TrueFoundry run x3**: 4 steps, one sandbox run, 0.76 every time
+- approve through the dashboard API -> rollback runs, service healthy
+- **deny** -> zero destructive calls, service stays degraded, agent stands down
+  without retrying or substituting another action
+- kill -9 mid-approval -> `--resume` continues at step 6, same run_id, the
+  pending rollback is re-gated (not auto-executed), timeline replays without
+  duplicating (22 -> 24 events)
+- `scripts/demo.sh` -> both servers up, scenario reset, dashboard serves,
+  Ctrl-C cleans up both servers with nothing left on :8000 / :8500
+
+**Three bugs found and fixed:**
+
+1. **The approval card said "no rationale given" on every live run.** The
+   rationale was only ever the prose in the same turn as the tool call, and
+   gpt-4o fires `rollback_service` with an empty text field. The card — the one
+   thing a human reads before authorising a production rollback — was blank on
+   the real path and only looked right in sim. Fixed structurally: `reason` is
+   now a required parameter on every gated tool, plus a fallback chain (last
+   thing the agent said -> the sandbox verdict) so the card is never blank even
+   if a model ignores it. Verified over three live runs.
+2. **`result = ...` silently returned nothing.** The sandbox reads `RESULT`; a
+   lowercase assignment gave back `ok: true, result: null`, which reads as
+   success and sends the model on with no evidence. Now returns a hint naming
+   the exact mistake.
+3. **Sandbox errors were unactionable.** `TypeError: list indices must be
+   integers or slices, not str` with no line number, thrown when the model
+   reached into PAYLOAD with the subagent-findings shape. It burned a whole
+   extra sandbox round-trip recovering. Errors now name the failing line, show
+   its source, and dump the real PAYLOAD keys and types.
+
+**Not a bug, so nobody re-derives it:** `scripts/demo.sh` looks like it leaks
+uvicorn on Ctrl-C when you launch it with `nohup ... &`. It does not. Bash
+ignores SIGINT in background jobs of a non-interactive shell, and a signal
+ignored on entry cannot be trapped — so the INT trap never fires. Under a normal
+foreground Ctrl-C the cleanup is correct; verified by resetting the disposition
+(`perl -e '$SIG{INT}="DEFAULT"; exec @ARGV' scripts/demo.sh`) and sending SIGINT.
+
+**Touched `ui/dashboard.html` again (Zeel's file):** `.reason` needed
+`white-space:pre-wrap` + `overflow-wrap:anywhere` + a `max-height` — rationales
+are longer and can be multi-line now, and without it they collapse onto one line
+or overflow the panel.

@@ -14,6 +14,7 @@ import io
 import json
 import os
 import sys
+import traceback
 
 
 def _harden(limits: dict) -> None:
@@ -71,6 +72,37 @@ def _harden(limits: dict) -> None:
     builtins.__import__ = guarded_import
 
 
+def _explain(exc: Exception, code: str, env: dict) -> str:
+    """Turn a sandbox exception into something the agent can fix in one shot.
+
+    A bare "TypeError: list indices must be integers or slices, not str" tells
+    the model nothing about WHERE it went wrong, and in a live gateway run it
+    cost a whole extra sandbox round-trip to guess. Name the line and show it.
+    """
+    parts = [f"{type(exc).__name__}: {exc}"]
+
+    lineno = None
+    for frame in traceback.extract_tb(exc.__traceback__):
+        if frame.filename == "<agent-diagnostic>":
+            lineno = frame.lineno
+    if lineno:
+        lines = code.splitlines()
+        if 0 < lineno <= len(lines):
+            parts.append(f"  at line {lineno}: {lines[lineno - 1].strip()}")
+
+    # Payload shape is the usual culprit: the model reaches into PAYLOAD with a
+    # key that is not there, or indexes a list as if it were a dict.
+    if isinstance(exc, (TypeError, KeyError, IndexError, AttributeError)):
+        payload = env.get("PAYLOAD")
+        if isinstance(payload, dict):
+            shape = ", ".join(
+                f"{k}: {type(v).__name__}"
+                + (f"[{len(v)}]" if isinstance(v, (list, dict)) else "")
+                for k, v in sorted(payload.items()))
+            parts.append(f"  PAYLOAD contains -> {{{shape}}}")
+    return "\n".join(parts)
+
+
 def main() -> None:
     req = json.loads(sys.stdin.read())
     _harden(req.get("limits", {}))
@@ -84,14 +116,27 @@ def main() -> None:
     sys.stdout = captured
 
     env: dict = {"__name__": "__sandbox__", "PAYLOAD": req.get("payload", {}), "RESULT": None}
-    out = {"ok": False, "result": None, "stdout": "", "error": None}
+    out = {"ok": False, "result": None, "stdout": "", "error": None, "hint": None}
     try:
         exec(compile(req["code"], "<agent-diagnostic>", "exec"), env)
         result = env.get("RESULT")
         json.dumps(result)  # must be serialisable to cross the boundary
         out.update(ok=True, result=result)
+        if result is None:
+            # The snippet ran clean but produced nothing. Almost always a
+            # lowercase `result = ...`, which silently vanishes — and "ok" with
+            # a null result reads as success, so the model proceeds on no
+            # evidence at all. Say what happened instead.
+            lowercase = "result" in env and env["result"] is not None
+            out["hint"] = (
+                "RESULT was never assigned, so this diagnostic returned nothing. "
+                + ("You assigned to `result` (lowercase); the sandbox only reads "
+                   "`RESULT`. Re-run with RESULT = ..."
+                   if lowercase else
+                   "Assign your answer to RESULT, e.g. RESULT = {...}, and re-run.")
+            )
     except Exception as exc:
-        out["error"] = f"{type(exc).__name__}: {exc}"
+        out["error"] = _explain(exc, req["code"], env)
     finally:
         sys.stdout = real_stdout
         out["stdout"] = captured.getvalue()[:4000]

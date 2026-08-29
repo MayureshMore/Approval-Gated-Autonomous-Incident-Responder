@@ -84,3 +84,76 @@ def test_unserialisable_result_is_rejected_not_raised():
 def test_missing_result_is_none_not_an_error():
     res = run_python("x = 5")
     assert res["ok"] and res["result"] is None
+
+
+# --- a clean run that returns nothing must not look like success ------------
+def test_lowercase_result_is_called_out_by_name():
+    """`result = ...` silently vanishes; ok=true with a null result reads as
+    success and sends the model on with no evidence. Say so instead."""
+    out = run_diagnostic("result = {'suspicion': 0.9}")
+
+    assert out["ok"] is True
+    assert out["result"] is None
+    assert "RESULT" in out["hint"]
+    assert "lowercase" in out["hint"]
+
+
+def test_forgetting_to_assign_at_all_is_called_out():
+    out = run_diagnostic("1 + 1")
+
+    assert out["ok"] is True
+    assert "RESULT = " in out["hint"]
+    assert "lowercase" not in out["hint"]
+
+
+def test_a_real_result_carries_no_hint():
+    out = run_diagnostic("RESULT = {'suspicion': 0.9}")
+
+    assert out["result"] == {"suspicion": 0.9}
+    assert "hint" not in out
+
+
+def test_a_falsy_but_real_result_is_not_mistaken_for_nothing():
+    """RESULT = 0 / [] / "" are answers, not omissions."""
+    for code, expected in (("RESULT = 0", 0), ("RESULT = []", []), ("RESULT = ''", "")):
+        out = run_diagnostic(code)
+        assert out["result"] == expected, code
+        assert "hint" not in out, f"{code} was wrongly flagged as returning nothing"
+
+
+# --- an error the agent can act on -----------------------------------------
+def test_error_names_the_failing_line():
+    """A bare "TypeError: list indices..." cost a live run an extra sandbox
+    round-trip. The message must say where."""
+    out = run_diagnostic('a = [1, 2]\nRESULT = a["key"]\n')
+
+    assert out["ok"] is False
+    assert "TypeError" in out["error"]
+    assert "line 2" in out["error"]
+    assert 'a["key"]' in out["error"]
+
+
+def test_error_shows_the_real_payload_shape():
+    """The usual mistake is reaching into PAYLOAD with a key that is not there."""
+    out = run_diagnostic('RESULT = PAYLOAD["deploys"]["alert_fired_at"]',
+                         {"alert_fired_at": "2026-01-01T00:00:00+00:00",
+                          "deploys": [{"version": "v1"}]})
+
+    assert "PAYLOAD contains" in out["error"]
+    assert "alert_fired_at: str" in out["error"]
+    assert "deploys: list[1]" in out["error"]
+
+
+def test_payload_shape_is_omitted_for_unrelated_errors():
+    """Only lookup/shape errors get the PAYLOAD dump; noise helps nobody."""
+    out = run_diagnostic("RESULT = 1 / 0", {"deploys": []})
+
+    assert "ZeroDivisionError" in out["error"]
+    assert "PAYLOAD contains" not in out["error"]
+
+
+def test_a_syntax_error_still_reports_cleanly():
+    out = run_diagnostic("def broken(:\n  pass")
+
+    assert out["ok"] is False
+    assert "SyntaxError" in out["error"]

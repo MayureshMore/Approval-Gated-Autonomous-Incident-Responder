@@ -139,6 +139,40 @@ def _github_impl(service: str, reason: str) -> dict:
 REQUIRES_APPROVAL: set[str] = set(tools.REQUIRES_APPROVAL) | {"open_revert_pr"}
 
 
+# The harness adds this to every gated tool. It is not a tool parameter — no
+# implementation ever sees it (core.py strips it before dispatch); it exists so
+# the rationale the human reads is part of the call itself.
+#
+# Asking the model to "explain yourself in the same message" does not work. In
+# live gateway runs GPT-4o fires rollback_service with an empty text field, and
+# the approval card then asks a human to authorise a production rollback with
+# nothing to authorise. A required parameter it cannot omit fixes that.
+APPROVAL_REASON_PARAM = "reason"
+APPROVAL_REASON_SCHEMA = {
+    "type": "string",
+    "description": (
+        "REQUIRED. Why this action, in 1-3 sentences: the evidence, the expected "
+        "effect, and the risk if you are wrong. An on-call human reads exactly "
+        "this text and nothing else before approving or denying."
+    ),
+}
+
+
+def _with_reason(schema: dict) -> dict:
+    """Add the approval rationale parameter to a gated tool's schema."""
+    fn = schema["function"]
+    if fn["name"] not in REQUIRES_APPROVAL:
+        return schema
+    params = dict(fn["parameters"])
+    props = dict(params.get("properties", {}))
+    if APPROVAL_REASON_PARAM in props:
+        return schema
+    props[APPROVAL_REASON_PARAM] = APPROVAL_REASON_SCHEMA
+    params["properties"] = props
+    params["required"] = list(params.get("required", [])) + [APPROVAL_REASON_PARAM]
+    return {**schema, "function": {**fn, "parameters": params}}
+
+
 def build_registry(include_github: bool = False) -> tuple[dict[str, Callable], list[dict]]:
     """Return (name -> impl, openai_schemas) for the tools this run may use."""
     impls: dict[str, Callable[..., Any]] = dict(tools.TOOLS)
@@ -151,7 +185,7 @@ def build_registry(include_github: bool = False) -> tuple[dict[str, Callable], l
         impls["open_revert_pr"] = _github_impl
         schemas.append(GITHUB_TOOL_SCHEMA)
 
-    return impls, schemas
+    return impls, [_with_reason(s) for s in schemas]
 
 
 def to_anthropic(openai_schemas: list[dict]) -> list[dict]:
