@@ -139,5 +139,6 @@ written, hardened and tested but not yet fired against a live repo — it stays
 dry-run until `GITHUB_REVERT_ENABLED=1`. See `PERSON_A_AGENT.md` for the ledger.
 
 ## License / provenance
-Open source, as the hackathon requires. Mock telemetry is synthetic; no real
-production system is involved.
+MIT — see [LICENSE](LICENSE). Open source, as the hackathon requires.
+Mock telemetry is synthetic; no real production system is involved, and the
+`.env` holding gateway credentials is gitignored and never committed.
