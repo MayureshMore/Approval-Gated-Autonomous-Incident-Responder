@@ -268,22 +268,22 @@ function render(events){
     }
 
     let text="";
-    if(e.kind==="tool_call")text=`<span class="title">${e.tool}</span><div class="meta"><code>${fmtArgs(e.args)}</code></div>`;
+    if(e.kind==="tool_call")text=`<span class="title">${escapeHtml(e.tool)}</span><div class="meta"><code>${escapeHtml(fmtArgs(e.args))}</code></div>`;
     else if(e.kind==="tool_result")text=`<span class="title">result</span><div class="meta">${escapeHtml(JSON.stringify(e.result)).slice(0,180)}</div>`;
-    else if(e.kind==="awaiting_approval")text=`<span class="title">Proposed: ${e.action}</span><div class="meta">${fmtArgs(e.args)}</div>`;
-    else if(e.kind==="approval_decision")text=`<span class="title">${e.approved?"Approved":"Rejected"} ${e.action}</span><div class="meta">by ${e.by}</div>`;
+    else if(e.kind==="awaiting_approval")text=`<span class="title">Proposed: ${escapeHtml(e.action)}</span><div class="meta">${escapeHtml(fmtArgs(e.args))}</div>`;
+    else if(e.kind==="approval_decision")text=`<span class="title">${e.approved?"Approved":"Rejected"} ${escapeHtml(e.action)}</span><div class="meta">by ${escapeHtml(e.by)}</div>`;
     else if(e.kind==="agent_message")text=`<span class="title">Agent</span><div class="meta">${escapeHtml(e.text||"")}</div>`;
-    else if(e.kind==="run_started")text=`<span class="title">Run started</span><div class="meta">${e.scenario||""}</div>`;
+    else if(e.kind==="run_started")text=`<span class="title">Run started</span><div class="meta">${escapeHtml(e.scenario||"")}</div>`;
     else if(e.kind==="run_finished")text=`<span class="title">Run finished</span>`;
-    else if(e.kind==="subagent_started")text=`<span class="title">Subagent: ${e.subagent}</span><div class="meta">${escapeHtml(e.task||"")}</div>`;
+    else if(e.kind==="subagent_started")text=`<span class="title">Subagent: ${escapeHtml(e.subagent)}</span><div class="meta">${escapeHtml(e.task||"")}</div>`;
     else if(e.kind==="subagent_finished"){
       const verdict=(e.findings&&e.findings.verdict)||"";
-      text=`<span class="title">Subagent done: ${e.subagent}</span><div class="meta">${escapeHtml(verdict||JSON.stringify(e.findings||{}).slice(0,160))}</div>`;
+      text=`<span class="title">Subagent done: ${escapeHtml(e.subagent)}</span><div class="meta">${escapeHtml(verdict||JSON.stringify(e.findings||{}).slice(0,160))}</div>`;
     }
     else if(e.kind==="sandbox_exec")text=`<span class="title">Executed in sandbox</span>
       <div class="sandbox-box"><div class="label">diagnostic code</div><pre>${escapeHtml(e.code||"")}</pre></div>`;
     else if(e.kind==="error")text=`<span class="title">Error</span><div class="meta">${escapeHtml(e.message||"")}</div>`;
-    else if(e.kind==="run_resumed")text=`<span class="title">Run resumed at step ${e.step!=null?e.step:"?"}</span><div class="meta">${(e.pending||[]).length?"still pending: "+e.pending.join(", "):""}</div>`;
+    else if(e.kind==="run_resumed")text=`<span class="title">Run resumed at step ${escapeHtml(e.step!=null?e.step:"?")}</span><div class="meta">${(e.pending||[]).length?escapeHtml("still pending: "+e.pending.join(", ")):""}</div>`;
     else continue;
     const cls=e.kind==="error"?"step error":e.kind==="run_resumed"?"step resumed":"step";
     rows.push(`<div class="${cls}"><div class="dot">${ICON[e.kind]||"•"}</div><div class="body">${text}</div></div>`);
@@ -319,7 +319,8 @@ function render(events){
   }
 }
 
-function escapeHtml(s){return (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+function escapeHtml(s){return String(s==null?"":s).replace(/[&<>"']/g,
+  c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 
 async function loop(){
   const events=await fetchEvents();
