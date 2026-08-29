@@ -317,3 +317,29 @@ def test_a_refused_scale_reports_the_replica_count_that_is_still_live(env):
     tools.scale_service("checkout-service", 5)
     r = tools.scale_service("checkout-service", 0)
     assert r["replicas"] == 5, "a refusal reported the requested count as if applied"
+
+
+# --- limits must mean what they say ----------------------------------------
+# `logs[-limit:]` reads naturally but lies at the edges: limit=0 becomes
+# logs[0:] and returns everything. The agent chooses this number itself.
+def test_a_zero_limit_returns_nothing_not_everything(env):
+    assert tools.get_logs("checkout-service", limit=0) == []
+    assert tools.get_recent_deploys("checkout-service", limit=0) == []
+
+
+def test_a_negative_limit_returns_nothing(env):
+    assert tools.get_logs("checkout-service", limit=-5) == []
+    assert tools.get_recent_deploys("checkout-service", limit=-5) == []
+
+
+def test_a_limit_returns_at_most_that_many(env):
+    for n in (1, 2, 3, 99):
+        assert len(tools.get_logs("checkout-service", limit=n)) <= n
+        assert len(tools.get_recent_deploys("checkout-service", limit=n)) <= n
+
+
+def test_a_limit_keeps_the_most_recent_logs(env):
+    """Truncating must drop the oldest, not the newest — the newest lines are
+    the ones that name the bad version."""
+    all_lines = tools.get_logs("checkout-service", limit=99)
+    assert tools.get_logs("checkout-service", limit=1) == all_lines[-1:]

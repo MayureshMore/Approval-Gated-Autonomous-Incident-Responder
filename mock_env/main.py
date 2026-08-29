@@ -130,12 +130,18 @@ def get_logs(service: str = Query(...), level: Optional[str] = "ERROR", limit: i
     logs = STATE["logs"].get(service, [])
     if level and level.upper() != "ALL":
         logs = [l for l in logs if l["level"] == level.upper()]
-    return logs[-limit:]
+    # `logs[-limit:]` reads naturally but lies at the edges: limit=0 becomes
+    # logs[0:] and returns EVERYTHING, and a negative limit silently drops
+    # lines off the front. The agent picks this number itself.
+    limit = max(0, limit)
+    return logs[len(logs) - limit:] if limit else []
 
 
 @app.get("/deploys")
 def get_deploys(service: str = Query(...), limit: int = 5):
-    return STATE["deploys"].get(service, [])[:limit]
+    # Same edge as /logs: a negative limit would slice from the end instead of
+    # returning nothing.
+    return STATE["deploys"].get(service, [])[:max(0, limit)]
 
 
 # ---------------------------------------------------------------------------

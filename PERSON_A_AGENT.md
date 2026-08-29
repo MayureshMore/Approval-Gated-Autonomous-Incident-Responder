@@ -235,7 +235,7 @@ mid-demo to show there is nothing up our sleeve.
 ## If you are resuming cold
 1. `.venv/bin/python run_agent.py --selftest` → `PASS` with the mock env up, or
    `OK (wiring verified)` with it down. Only `FAIL` means the build is wrong.
-2. `.venv/bin/python -m pytest` → expect **215 passed**.
+2. `.venv/bin/python -m pytest` → expect **227 passed**.
 3. Do a full dashboard run (commands at the top). If that is green, the demo is safe.
 4. Then: A2 live (needs gateway onboarding) or A6 live (needs `gh` + a repo).
 
@@ -368,7 +368,7 @@ Ran the whole stack as a tester, not as the author: live servers, real runs,
 adversarial probes. Everything below was executed, not inferred from the code.
 
 **Green:**
-- `215 passed` (mine 201 + Zeel's 14)
+- `227 passed` (mine 201 + Zeel's 14)
 - `--selftest` PASS with the servers up
 - sim run: 8 steps, correlation 0.76, service healthy
 - **live TrueFoundry runs x5**: 0.76 every time, real rationale on every card,
@@ -527,7 +527,7 @@ by running it.
 
 ### Merge verification — every line of this was executed
 
-- `215 passed`, `--selftest` PASS
+- `227 passed`, `--selftest` PASS
 - fail-open scenario reproduced end to end: run 2 waits, executes nothing
 - version guard: `v9.9.9` and `v1.4.2` refused, `v1.4.1` heals
 - sandbox confinement intact: 5/5 escapes blocked, real work still runs
@@ -546,3 +546,74 @@ servers were the ones started before the merge, and **uvicorn does not reload**.
 Restarting them showed her fix working correctly. Anything that tests the bus or
 the mock env has to restart them first — a stale uvicorn will happily tell you a
 fix does not work.
+
+---
+
+## 13. Final pre-demo stress pass
+
+Went looking for bugs rather than re-confirming the happy path. The suite was
+green through every one of these — none of them break a normal run, and each
+makes the system state something untrue.
+
+### Fixed
+
+1. **The agent blamed a human for a denial no human made.** Kill the bus at the
+   gate: it fails closed correctly and the event records `by: "system"`,
+   `"approval channel failed"` — but the spoken summary read *"Rollback rejected
+   by the on-call human."* `core.py` already passed `decided_by` back; the sim
+   provider ignored it. On a project whose whole claim is that a human decided,
+   inventing that human is the worst sentence we could put on screen.
+2. **The summary said "executed" for an action that failed.** Approval is not
+   execution — with the env unreachable the call returns `ok: false` and
+   production never changed, but `executed_destructive` counted every approval.
+   It now requires the call to have landed, and `APPROVED-BUT-FAILED` says so
+   when they differ.
+3. **`/scale` confirmed nonsense.** `{"ok": true, "replicas": -5, "Scaled ... to
+   -5 replicas."}` — the same family as Zeel's rollback version guard. Bounded
+   to 1..100, and a refusal reports the count that is actually live.
+4. **`limit` did not mean limit.** `logs[-limit:]` returns EVERYTHING for
+   `limit=0` and silently drops lines off the front for a negative. The agent
+   picks that number itself. Both `/logs` and `/deploys` clamp now, and
+   truncation keeps the newest lines — the ones naming the bad version.
+5. **A nested clone of the repo was sitting untracked in the working tree.**
+   848K, and `git add -A` would have committed a duplicate of the project into
+   itself. Removed.
+
+### Verified clean, no bug found
+
+- `kill -9` mid-approval then `--resume`: re-gated, nothing auto-executes
+- resuming an already-finished run is refused (`exit 1`), no double rollback
+- `--resume last` correctly picks the newest *running* checkpoint
+- mock env killed mid-run: no traceback, errors surface as data, run completes
+- every subagent lane failing in turn: run survives, lane reports its error
+- **two agents on one bus, one approval → exactly one gate opens.** Zeel's
+  fail-open fix holds under concurrency
+- `demo.sh` refuses to double-launch when a port is taken
+- dashboard at 400 events: 10ms render, 209KB, unchanged re-render skipped
+- all three gated tools survive the reason-strip and execute correctly
+- `open_revert_pr` stays dry-run without `GITHUB_REPO`
+- adversarial tool inputs (unicode, path traversal, 4000-char names) all
+  rejected as unknown service
+
+### One residual, deliberately NOT changed
+
+A decision posted with **no** `request_id` still satisfies every pending gate
+for that action — one click approved two concurrent runs in testing. This is
+Zeel's documented tradeoff (`test_a_decision_recorded_without_a_request_id_is
+_still_answered`): she chose it so a stale cached dashboard cannot deadlock an
+agent mid-demo. The shipped dashboard always sends a real `request_id`, so the
+demo path is unaffected. **Do not "fix" this without talking to her** — it
+reverses a decision she reasoned about and tested.
+
+### Three times my own test harness lied to me
+
+Worth writing down, because each cost real time and all three looked like
+product bugs:
+- a **stale uvicorn** reported Zeel's fail-open fix as broken (uvicorn does not
+  reload — restart the servers after any code change)
+- a **truncated console line** made `request_id` extraction return empty, which
+  looked like cross-approval
+- **zsh does not word-split** unquoted `$vars` like bash, so `set -- $ids` gave
+  one token and I posted both ids as a single `request_id`
+
+Verify the harness before believing the failure.
