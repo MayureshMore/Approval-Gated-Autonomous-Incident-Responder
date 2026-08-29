@@ -9,6 +9,7 @@ that is cheap to run for real (--help style flags and syntax).
 """
 import os
 import re
+import shutil
 import stat
 import subprocess
 
@@ -45,11 +46,33 @@ def body(source) -> str:
 
 def test_script_exists_and_is_executable():
     assert os.path.exists(SCRIPT), "the demo launcher must be committed"
-    assert os.stat(SCRIPT).st_mode & stat.S_IXUSR, "must be chmod +x or `make demo` fails"
+
+    # Assert on the mode git has recorded, not the one on disk. That is what
+    # every other clone actually receives, and it also catches the bit being set
+    # locally but never committed — which a bare os.stat() here would pass.
+    # (It is also the only workable check on Windows: NTFS cannot represent the
+    # exec bit, so os.stat() fails there even when the committed mode is right.)
+    proc = subprocess.run(["git", "ls-files", "-s", "--", "scripts/demo.sh"],
+                          cwd=REPO, capture_output=True, text=True)
+    if proc.returncode == 0 and proc.stdout.strip():
+        mode = proc.stdout.split()[0]
+        assert mode == "100755", (
+            f"must be committed chmod +x or `make demo` fails (git mode is {mode}; "
+            "fix with: git update-index --chmod=+x scripts/demo.sh)")
+    elif os.name == "nt":
+        pytest.skip("not a git checkout, and NTFS cannot represent the exec bit")
+    else:
+        assert os.stat(SCRIPT).st_mode & stat.S_IXUSR, "must be chmod +x or `make demo` fails"
 
 
 def test_it_is_valid_bash():
-    proc = subprocess.run(["bash", "-n", SCRIPT], capture_output=True, text=True)
+    if shutil.which("bash") is None:
+        pytest.skip("bash not installed")
+    # Run from the repo with a relative path: git-bash on Windows cannot resolve
+    # a native C:\... argument, which failed this for reasons unrelated to the
+    # script's syntax.
+    proc = subprocess.run(["bash", "-n", "scripts/demo.sh"], cwd=REPO,
+                          capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
 
 
