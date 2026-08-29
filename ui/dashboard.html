@@ -21,8 +21,13 @@
   .badge.crit{background:rgba(248,81,73,.15);color:var(--crit)}
   .badge.ok{background:rgba(63,185,80,.15);color:var(--ok)}
   .badge.run{background:rgba(68,147,248,.15);color:var(--accent)}
-  .wrap{display:grid;grid-template-columns:1fr 340px;gap:20px;padding:20px 24px;max-width:1200px;margin:0 auto}
-  @media(max-width:820px){.wrap{grid-template-columns:1fr}}
+  .timer{color:var(--muted);font-variant-numeric:tabular-nums;font-size:13px}
+  .wrap{display:grid;grid-template-columns:1fr 360px;gap:20px;padding:20px 24px;max-width:1200px;margin:0 auto}
+  @media(max-width:900px){.wrap{grid-template-columns:1fr}}
+  @media(max-width:900px){body{font-size:15px}
+    .card h2{padding:14px 18px}
+    header{padding:16px 20px;flex-wrap:wrap}
+    button{padding:16px;font-size:16px;min-height:52px}}
   .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}
   .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);
            margin:0;padding:12px 16px;border-bottom:1px solid var(--border)}
@@ -35,15 +40,27 @@
   .step .title{font-weight:600}
   .step .meta{color:var(--muted);font-size:12.5px;word-break:break-word}
   code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:12.5px}
+  .sandbox-box{margin-top:6px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;
+    padding:8px 10px}
+  .sandbox-box .label{color:var(--accent);font-size:11px;text-transform:uppercase;letter-spacing:.05em;
+    margin-bottom:4px}
+  .sandbox-box pre{margin:0;white-space:pre-wrap;word-break:break-word;font-size:12px;
+    font-family:ui-monospace,Consolas,monospace;max-height:160px;overflow:auto}
+  .step.error .title{color:var(--crit)}
+  .step.resumed{background:rgba(68,147,248,.08)}
+  .step.resumed .title{color:var(--accent)}
   /* approval card */
-  #approval{border:1px solid var(--pending);background:linear-gradient(180deg,rgba(210,153,34,.10),transparent)}
+  @keyframes pulse-border{0%,100%{box-shadow:0 0 0 0 rgba(210,153,34,.35)}50%{box-shadow:0 0 0 8px rgba(210,153,34,0)}}
+  #approval{border:2px solid var(--pending);background:linear-gradient(180deg,rgba(210,153,34,.10),transparent);
+            animation:pulse-border 1.8s ease-out infinite}
   #approval.hidden{display:none}
   #approval h2{color:var(--pending);border-color:var(--pending)}
   .approval-body{padding:16px}
   .action-line{font-size:15px;font-weight:600;margin-bottom:6px}
   .reason{color:var(--muted);margin:8px 0 16px}
   .btns{display:flex;gap:10px}
-  button{flex:1;padding:11px;border:none;border-radius:8px;font-weight:600;font-size:14px;cursor:pointer}
+  button{flex:1;padding:13px;border:none;border-radius:8px;font-weight:600;font-size:15px;cursor:pointer;
+         min-height:48px;-webkit-tap-highlight-color:transparent}
   .approve{background:var(--ok);color:#03210c}
   .reject{background:transparent;color:var(--crit);border:1px solid var(--crit)}
   button:disabled{opacity:.5;cursor:default}
@@ -54,6 +71,20 @@
   .empty{padding:24px 16px;color:var(--muted);text-align:center}
   .resolved{padding:16px;color:var(--ok);font-weight:600;display:none}
   .resolved.show{display:block}
+  /* before/after deltas */
+  .delta-row{padding:12px 16px;border-bottom:1px solid var(--border)}
+  .delta-row:last-child{border-bottom:none}
+  .delta-label{color:var(--muted);font-size:12px;margin-bottom:4px}
+  .delta-vals{display:flex;align-items:baseline;gap:8px;font-variant-numeric:tabular-nums}
+  .delta-vals .before{color:var(--muted);text-decoration:line-through;font-size:13px}
+  .delta-vals .arrow{color:var(--muted)}
+  .delta-vals .after{font-weight:700;font-size:16px}
+  .delta-vals .after.good{color:var(--ok)} .delta-vals .after.bad{color:var(--crit)}
+  .spark{margin-top:6px;display:block}
+  /* run timer */
+  .timer{display:flex;align-items:center;gap:6px}
+  .timer .dotpulse{width:7px;height:7px;border-radius:50%;background:var(--accent)}
+  .timer.done .dotpulse{background:var(--ok)}
 </style>
 </head>
 <body>
@@ -61,6 +92,7 @@
   <h1>🛰️ Incident Responder</h1>
   <span class="sub" id="scenario">waiting for run…</span>
   <span style="flex:1"></span>
+  <span class="timer" id="timer"><span class="dotpulse"></span><span id="timer-text">—</span></span>
   <span class="badge run" id="status">IDLE</span>
 </header>
 
@@ -93,6 +125,19 @@
       <div class="metric"><span>Error rate</span><span class="v" id="m-err">—</span></div>
       <div class="metric"><span>p99 latency</span><span class="v" id="m-lat">—</span></div>
     </div>
+    <div class="card" id="delta-card" style="display:none">
+      <h2>Before → after</h2>
+      <div class="delta-row">
+        <div class="delta-label">Error rate</div>
+        <div class="delta-vals"><span class="before" id="d-err-before">—</span><span class="arrow">→</span><span class="after" id="d-err-after">—</span></div>
+        <svg class="spark" id="spark-err" width="100%" height="28" viewBox="0 0 100 28" preserveAspectRatio="none"></svg>
+      </div>
+      <div class="delta-row">
+        <div class="delta-label">p99 latency</div>
+        <div class="delta-vals"><span class="before" id="d-lat-before">—</span><span class="arrow">→</span><span class="after" id="d-lat-after">—</span></div>
+        <svg class="spark" id="spark-lat" width="100%" height="28" viewBox="0 0 100 28" preserveAspectRatio="none"></svg>
+      </div>
+    </div>
     <div class="card">
       <h2>Harness features seen</h2>
       <div class="metric"><span>Sandbox code</span><span class="v" id="f-sandbox">—</span></div>
@@ -104,16 +149,36 @@
 
 <script>
 const ICON = {run_started:"▶",tool_call:"🔧",tool_result:"✓",awaiting_approval:"⏸",
-  approval_decision:"👤",agent_message:"💬",run_finished:"🏁"};
+  approval_decision:"👤",agent_message:"💬",run_finished:"🏁",
+  subagent_started:"⇉",subagent_finished:"⇇",sandbox_exec:"🧪",error:"⚠",run_resumed:"↻"};
 let decided = new Set();
+let runStartT = null, runEndT = null;
+
+function fmtElapsed(sec){
+  const m=Math.floor(sec/60), s=Math.floor(sec%60);
+  return `${m}:${String(s).padStart(2,"0")}`;
+}
+
+function tickTimer(){
+  const el=document.getElementById("timer"), txt=document.getElementById("timer-text");
+  if(runStartT==null){txt.textContent="—";el.classList.remove("done");return;}
+  const end = runEndT!=null ? runEndT : Date.now()/1000;
+  txt.textContent = fmtElapsed(end-runStartT);
+  el.classList.toggle("done", runEndT!=null);
+}
+setInterval(tickTimer,1000);
 
 function fmtArgs(a){return a?Object.entries(a).map(([k,v])=>`${k}=${v}`).join(", "):""}
 
 async function fetchEvents(){
+  // Returns the events array on success, or null if every source failed. null is
+  // distinct from an empty array (a real /reset), so a transient network blip
+  // during a killed-agent demo never wipes the approval card or timeline — see
+  // PERSON_A_AGENT.md's session-survival handoff note.
   for(const url of ["/events","events.json"]){
     try{const r=await fetch(url,{cache:"no-store"}); if(r.ok) return await r.json();}catch(e){}
   }
-  return [];
+  return null;
 }
 
 function updateMetrics(m){
@@ -127,27 +192,80 @@ function updateMetrics(m){
   lat.textContent=m.p99_latency_ms+"ms"; lat.className="v "+(m.p99_latency_ms>1000?"bad":"good");
 }
 
-async function sendDecision(action,approved){
+async function sendDecision(action,approved,requestId){
   try{await fetch("/decision",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({action,approved})});}catch(e){}
+    body:JSON.stringify({action,approved,request_id:requestId||null})});}catch(e){}
+}
+
+function drawSpark(svgId, values, badWhenHigh){
+  const svg=document.getElementById(svgId);
+  if(values.length<2){svg.innerHTML="";return;}
+  const w=100,h=28,pad=2;
+  const min=Math.min(...values), max=Math.max(...values);
+  const range=(max-min)||1;
+  const pts=values.map((v,i)=>{
+    const x=pad+(i/(values.length-1))*(w-2*pad);
+    const y=h-pad-((v-min)/range)*(h-2*pad);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  const last=values[values.length-1], first=values[0];
+  const improved = badWhenHigh ? last<=first : last>=first;
+  const color = improved ? "var(--ok)" : "var(--crit)";
+  svg.innerHTML = `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2"
+    stroke-linecap="round" stroke-linejoin="round"/>`;
+}
+
+function updateDeltaCard(history){
+  const card=document.getElementById("delta-card");
+  if(history.length<1){card.style.display="none";return;}
+  card.style.display="block";
+  const first=history[0], last=history[history.length-1];
+
+  const eb=document.getElementById("d-err-before"), ea=document.getElementById("d-err-after");
+  eb.textContent=(first.error_rate*100).toFixed(1)+"%";
+  ea.textContent=(last.error_rate*100).toFixed(1)+"%";
+  ea.className="after "+(last.error_rate>0.05?"bad":"good");
+
+  const lb=document.getElementById("d-lat-before"), la=document.getElementById("d-lat-after");
+  lb.textContent=first.p99_latency_ms+"ms";
+  la.textContent=last.p99_latency_ms+"ms";
+  la.className="after "+(last.p99_latency_ms>1000?"bad":"good");
+
+  drawSpark("spark-err", history.map(m=>m.error_rate), true);
+  drawSpark("spark-lat", history.map(m=>m.p99_latency_ms), true);
 }
 
 function render(events){
   const tl=document.getElementById("timeline");
   const statusEl=document.getElementById("status");
   let pending=null, lastMetrics=null, sawSandbox=false, sawReal=false, finished=false;
+  const metricsHistory=[];
+  const seenDecisionKeys=new Set();
+  runStartT=null; runEndT=null;
 
   const rows=[];
   for(const e of events){
     if(e.kind==="run_started"){document.getElementById("scenario").textContent=e.scenario||"incident";
-      statusEl.textContent="INVESTIGATING";statusEl.className="badge run";}
-    if(e.kind==="tool_result"&&e.result&&e.result.service&&e.result.status)lastMetrics=e.result;
-    if(e.kind==="tool_result"&&e.result&&e.result.p99_latency_ms!==undefined)lastMetrics=e.result;
-    if(e.kind==="tool_call"&&/diagnos|correlate|sandbox/i.test(JSON.stringify(e)))sawSandbox=true;
-    if(e.kind==="tool_call"&&/github|pr|revert|slack/i.test(JSON.stringify(e)))sawReal=true;
+      statusEl.textContent="INVESTIGATING";statusEl.className="badge run";
+      if(runStartT==null)runStartT=e.t;}
+    if(e.kind==="tool_result"&&e.result&&e.result.service&&e.result.status){lastMetrics=e.result;metricsHistory.push(e.result);}
+    else if(e.kind==="tool_result"&&e.result&&e.result.p99_latency_ms!==undefined){lastMetrics=e.result;metricsHistory.push(e.result);}
+    if(e.kind==="sandbox_exec"||(e.kind==="tool_call"&&/diagnos|correlate|sandbox/i.test(JSON.stringify(e))))sawSandbox=true;
+    if(e.kind==="tool_call"&&/^open_revert_pr$|^github_|^slack_/i.test(e.tool||""))sawReal=true;
     if(e.kind==="awaiting_approval"&&!decided.has(e.action))pending=e;
     if(e.kind==="approval_decision"){decided.add(e.action); if(pending&&pending.action===e.action)pending=null;}
-    if(e.kind==="run_finished")finished=true;
+    if(e.kind==="run_finished"){finished=true; runEndT=e.t;}
+
+    // the bus echoes a bare approval_decision on POST /decision, and the agent may
+    // also emit its own richer one for the same gate — show only the first. Key by
+    // request_id when present (correct even if the same action is gated twice in
+    // one run, e.g. across a Layer-4 resume); fall back to action for the older
+    // fallback_agent.py path, which never sends a request_id.
+    if(e.kind==="approval_decision"){
+      const key=e.request_id||e.action;
+      if(seenDecisionKeys.has(key))continue;
+      seenDecisionKeys.add(key);
+    }
 
     let text="";
     if(e.kind==="tool_call")text=`<span class="title">${e.tool}</span><div class="meta"><code>${fmtArgs(e.args)}</code></div>`;
@@ -157,13 +275,25 @@ function render(events){
     else if(e.kind==="agent_message")text=`<span class="title">Agent</span><div class="meta">${escapeHtml(e.text||"")}</div>`;
     else if(e.kind==="run_started")text=`<span class="title">Run started</span><div class="meta">${e.scenario||""}</div>`;
     else if(e.kind==="run_finished")text=`<span class="title">Run finished</span>`;
+    else if(e.kind==="subagent_started")text=`<span class="title">Subagent: ${e.subagent}</span><div class="meta">${escapeHtml(e.task||"")}</div>`;
+    else if(e.kind==="subagent_finished"){
+      const verdict=(e.findings&&e.findings.verdict)||"";
+      text=`<span class="title">Subagent done: ${e.subagent}</span><div class="meta">${escapeHtml(verdict||JSON.stringify(e.findings||{}).slice(0,160))}</div>`;
+    }
+    else if(e.kind==="sandbox_exec")text=`<span class="title">Executed in sandbox</span>
+      <div class="sandbox-box"><div class="label">diagnostic code</div><pre>${escapeHtml(e.code||"")}</pre></div>`;
+    else if(e.kind==="error")text=`<span class="title">Error</span><div class="meta">${escapeHtml(e.message||"")}</div>`;
+    else if(e.kind==="run_resumed")text=`<span class="title">Run resumed at step ${e.step!=null?e.step:"?"}</span><div class="meta">${(e.pending||[]).length?"still pending: "+e.pending.join(", "):""}</div>`;
     else continue;
-    rows.push(`<div class="step"><div class="dot">${ICON[e.kind]||"•"}</div><div class="body">${text}</div></div>`);
+    const cls=e.kind==="error"?"step error":e.kind==="run_resumed"?"step resumed":"step";
+    rows.push(`<div class="${cls}"><div class="dot">${ICON[e.kind]||"•"}</div><div class="body">${text}</div></div>`);
   }
   tl.innerHTML=rows.length?rows.join(""):`<div class="empty">No activity yet. Start the agent.</div>`;
   tl.scrollTop=tl.scrollHeight;
 
   updateMetrics(lastMetrics);
+  updateDeltaCard(metricsHistory);
+  tickTimer();
   document.getElementById("f-sandbox").textContent=sawSandbox?"✓":"—";
   document.getElementById("f-approval").textContent=decided.size?"✓":(pending?"waiting":"—");
   document.getElementById("f-real").textContent=sawReal?"✓":"—";
@@ -175,8 +305,8 @@ function render(events){
     document.getElementById("ap-action").textContent=`${pending.action}(${fmtArgs(pending.args)})`;
     document.getElementById("ap-reason").textContent=pending.reason||"";
     statusEl.textContent="AWAITING APPROVAL";statusEl.className="badge crit";
-    document.getElementById("btn-approve").onclick=()=>{decided.add(pending.action);sendDecision(pending.action,true);ap.classList.add("hidden");};
-    document.getElementById("btn-reject").onclick=()=>{decided.add(pending.action);sendDecision(pending.action,false);ap.classList.add("hidden");};
+    document.getElementById("btn-approve").onclick=()=>{decided.add(pending.action);sendDecision(pending.action,true,pending.request_id);ap.classList.add("hidden");};
+    document.getElementById("btn-reject").onclick=()=>{decided.add(pending.action);sendDecision(pending.action,false,pending.request_id);ap.classList.add("hidden");};
   }else{
     ap.classList.add("hidden");
   }
@@ -191,7 +321,11 @@ function render(events){
 
 function escapeHtml(s){return (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
 
-async function loop(){ render(await fetchEvents()); setTimeout(loop,1200); }
+async function loop(){
+  const events=await fetchEvents();
+  if(events!==null)render(events);   // null = fetch failed this cycle; keep prior state on screen
+  setTimeout(loop,1200);
+}
 loop();
 </script>
 </body>

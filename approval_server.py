@@ -18,13 +18,15 @@ Then: open http://localhost:8500/
 Agent: set AGENT_BUS_URL=http://localhost:8500 before running the agent.
 """
 import os
+from typing import Optional
+
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 app = FastAPI(title="Incident Responder Bus")
 
 EVENTS = []                 # full event log
-DECISIONS = {}             # action name -> {"approved": bool}
+DECISIONS = {}             # action name -> {"approved": bool, "request_id": str|None}
 UI_FILE = os.path.join(os.path.dirname(__file__), "ui", "dashboard.html")
 
 
@@ -44,15 +46,24 @@ def get_events():
 async def set_decision(req: Request):
     body = await req.json()
     action = body.get("action")
-    DECISIONS[action] = {"approved": bool(body.get("approved"))}
+    request_id = body.get("request_id")
+    DECISIONS[action] = {"approved": bool(body.get("approved")), "request_id": request_id}
     EVENTS.append({"kind": "approval_decision", "action": action,
-                   "approved": bool(body.get("approved")), "by": "human"})
+                   "approved": bool(body.get("approved")), "by": "human",
+                   "request_id": request_id})
     return {"ok": True}
 
 
 @app.get("/decision")
-def get_decision(action: str):
-    """Agent polls this. Returns {'pending': true} until the human decides."""
+def get_decision(action: str, request_id: Optional[str] = None):
+    """Agent polls this. Returns {'pending': true} until the human decides.
+
+    `request_id` is the id the agent's own pending gate carries; the response
+    echoes back the request_id actually recorded at decision time (from the
+    dashboard's POST /decision) so the agent can detect a decision left over
+    from an earlier gate on the same action name and keep waiting instead of
+    misreading it as its own answer.
+    """
     d = DECISIONS.get(action)
     if d is None:
         return {"pending": True}
