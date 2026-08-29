@@ -3,6 +3,7 @@
 Ripcord — the incident responder, CLI entrypoint.
 
     python run_agent.py --provider truefoundry --subagents   # the primary runtime
+    python run_agent.py --provider truefoundry --model ms-openai-main/gpt-4o-mini
     python run_agent.py --provider sim                       # no API key needed
     python run_agent.py --selftest                           # verify wiring, run nothing
     python run_agent.py --resume last                        # continue a killed run
@@ -38,19 +39,19 @@ from agent.registry import audit
 from agent.session import RUNNING, SessionStore
 
 
-def make_provider(name: str, run_id: str | None = None):
+def make_provider(name: str, run_id: str | None = None, model: str | None = None):
     if name == "truefoundry":
         from agent.providers.truefoundry import TrueFoundryProvider
-        return TrueFoundryProvider(run_id=run_id)
+        return TrueFoundryProvider(run_id=run_id, model=model)
     if name == "sim":
         from agent.providers.sim import SimProvider
         return SimProvider()
     if name == "openai":
         from agent.providers.openai_provider import OpenAIProvider
-        return OpenAIProvider()
+        return OpenAIProvider(model=model)
     if name == "anthropic":
         from agent.providers.anthropic_provider import AnthropicProvider
-        return AnthropicProvider()
+        return AnthropicProvider(model=model)
     raise SystemExit(f"unknown provider '{name}'")
 
 
@@ -90,6 +91,8 @@ def main() -> int:
                    help="fan out parallel read-only investigators first")
     p.add_argument("--github", action="store_true",
                    help="register the real revert-PR tool (Layer 2)")
+    p.add_argument("--model", help="override the model id "
+                   "(e.g. ms-openai-main/gpt-4o); otherwise taken from .env")
     p.add_argument("--max-steps", type=int, default=16)
     p.add_argument("--approval-timeout", type=int, default=300)
     p.add_argument("--selftest", action="store_true", help="run preflight and exit")
@@ -130,6 +133,8 @@ def main() -> int:
     problems = preflight(require_env=True)
     if args.provider == "truefoundry":
         from agent.providers.truefoundry import preflight as tfy_preflight
+        if args.model:
+            os.environ["TRUEFOUNDRY_MODEL"] = args.model
         tfy = tfy_preflight()
         if not tfy["ready"]:
             problems.append(f"truefoundry gateway: {tfy.get('error')}")
@@ -167,7 +172,7 @@ def main() -> int:
     # A resumed run keeps its run_id, so the dashboard timeline is continuous.
     bus = EventBus(run_id=state["run_id"] if state else None)
     agent = IncidentAgent(
-        provider=make_provider(args.provider, run_id=bus.run_id),
+        provider=make_provider(args.provider, run_id=bus.run_id, model=args.model),
         bus=bus,
         gate=ApprovalGate(bus, timeout_s=args.approval_timeout),
         include_github=state.get("include_github", args.github) if state else args.github,
