@@ -9,6 +9,7 @@ goes through agent/bus; nothing destructive gets past agent/approval. This file
 is just the orchestration, and it is deliberately boring so it never surprises us
 on stage.
 """
+import inspect
 import json
 import os
 import time
@@ -18,7 +19,7 @@ from typing import Any, Callable, Optional
 from agent.approval import ApprovalGate
 from agent.bus import EventBus
 from agent.providers.base import ToolCall
-from agent.registry import build_registry, is_gated
+from agent.registry import APPROVAL_REASON_PARAM, build_registry, is_gated
 from agent.session import FAILED, FINISHED, RUNNING, SessionStore
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -75,6 +76,9 @@ class IncidentAgent:
         self._denied: set[tuple] = set()
         self._pending: list[ToolCall] = []   # calls requested but not yet completed
         self._rationale = ""
+        # Fallbacks for an approval card the model left blank. See _reason_for().
+        self._last_message = ""
+        self._last_evidence = ""
         self._scenario = ""
 
     # -- entry point --------------------------------------------------------
@@ -103,6 +107,8 @@ class IncidentAgent:
         self.report.sandbox_runs = state.get("sandbox_runs", 0)
         self._denied = {tuple(d) for d in state.get("denied", [])}
         self._rationale = state.get("rationale", "")
+        self._last_message = state.get("last_message", "")
+        self._last_evidence = state.get("last_evidence", "")
         self._pending = [ToolCall(c["id"], c["name"], c.get("args", {}))
                          for c in state.get("pending_calls", [])]
         self.provider.restore(state.get("provider_state", {}))
@@ -146,6 +152,8 @@ class IncidentAgent:
                 "sandbox_runs": self.report.sandbox_runs,
                 "denied": [list(d) for d in self._denied],
                 "rationale": self._rationale,
+                "last_message": self._last_message,
+                "last_evidence": self._last_evidence,
                 "pending_calls": [{"id": c.id, "name": c.name, "args": c.args}
                                   for c in self._pending],
                 "final_message": self.report.final_message,
@@ -168,6 +176,7 @@ class IncidentAgent:
 
                 if turn.text:
                     self.bus.emit("agent_message", text=turn.text)
+                    self._last_message = turn.text
 
                 if not turn.wants_tools:
                     self.report.final_message = turn.text
@@ -191,6 +200,18 @@ class IncidentAgent:
             return {"ok": False, "error": f"unknown tool '{call.name}'"}
 
         if is_gated(call.name):
+            # `reason` carries the model's justification to the human. For most
+            # gated tools the harness injected it and the impl knows nothing
+            # about it, so it must be stripped or the call dies on an
+            # unexpected keyword. open_revert_pr is the exception: it declares
+            # its own `reason` and puts it in the PR body, so there we read it
+            # and leave it in place. Deciding from the signature means a new
+            # gated tool cannot get this wrong by omission.
+            stated = call.args.get(APPROVAL_REASON_PARAM, "")
+            if not _impl_accepts(self.impls[call.name], APPROVAL_REASON_PARAM):
+                call.args.pop(APPROVAL_REASON_PARAM, None)
+            if isinstance(stated, str) and stated.strip():
+                rationale = stated.strip()
             verdict = self._gate(call, rationale)
             if verdict is not None:
                 self.bus.emit("tool_result", tool=call.name, result=verdict)
@@ -210,7 +231,7 @@ class IncidentAgent:
                     "message": "Already denied in this run. Do not retry; change approach "
                                "or escalate to a human owner."}
 
-        reason = rationale.strip() or "no rationale given"
+        reason = self._reason_for(rationale)
         decision = self.gate.request(call.name, call.args, reason)
         self.report.approvals.append({
             "action": call.name, "args": call.args,
@@ -224,6 +245,28 @@ class IncidentAgent:
                 "message": f"Denied by {decision.by} ({decision.reason}). Do not retry this "
                            f"action; reconsider or hand off to a human."}
 
+    def _reason_for(self, rationale: str) -> str:
+        """What the human reads on the approval card. Never blank.
+
+        A model is *supposed* to state its case in the same message as the
+        destructive call, and agent_prompt.md says so twice. Real ones do not
+        always comply — gpt-4o will happily fire the call with no text at all —
+        and an approval card reading "no rationale given" asks a human to sign
+        off on a production rollback with nothing to sign off on. So we fall
+        back to what the run itself established, clearly labelled as not having
+        come attached to the call.
+        """
+        if rationale.strip():
+            return rationale.strip()
+        for label, text in (("last stated by the agent", self._last_message),
+                            ("sandbox diagnostic", self._last_evidence)):
+            if text.strip():
+                return (f"The agent gave no rationale with this call. "
+                        f"Most recent evidence on record ({label}):\n\n{text.strip()}")
+        return ("The agent gave no rationale with this call, and the run has "
+                "produced no findings to fall back on. Approving means acting "
+                "on an unexplained request — deny unless you know why.")
+
     def _execute(self, call) -> Any:
         if call.name == "run_diagnostic":
             self.report.sandbox_runs += 1
@@ -231,7 +274,10 @@ class IncidentAgent:
                           payload_keys=sorted((call.args.get("payload") or {}).keys()))
         self.report.tool_calls.append(call.name)
         try:
-            return self.impls[call.name](**call.args)
+            result = self.impls[call.name](**call.args)
+            if call.name == "run_diagnostic":
+                self._last_evidence = _diagnostic_reason(result)
+            return result
         except TypeError as exc:
             return {"ok": False, "error": f"bad arguments for {call.name}: {exc}"}
         except Exception as exc:
@@ -246,6 +292,28 @@ class IncidentAgent:
         return ("Parallel investigation already completed by three subagents. "
                 "Use these findings as your starting evidence:\n"
                 + json.dumps(findings, indent=2, default=str))
+
+
+def _impl_accepts(impl: Callable, param: str) -> bool:
+    """Does this implementation take `param` (directly or via **kwargs)?"""
+    try:
+        params = inspect.signature(impl).parameters
+    except (TypeError, ValueError):
+        return False
+    return param in params or any(p.kind == p.VAR_KEYWORD for p in params.values())
+
+
+def _diagnostic_reason(result: Any) -> str:
+    """Pull the human-readable verdict out of a run_diagnostic result, if any."""
+    if not isinstance(result, dict) or not result.get("ok"):
+        return ""
+    inner = result.get("result")
+    if isinstance(inner, dict):
+        for key in ("reason", "verdict", "summary"):
+            if isinstance(inner.get(key), str) and inner[key].strip():
+                return inner[key].strip()
+        return json.dumps(inner, default=str)[:500]
+    return str(inner)[:500] if inner else ""
 
 
 # -- keep the model's context (and the dashboard) readable -------------------

@@ -83,7 +83,7 @@ Unchanged from the original scaffold: `tools.py`, `tool_schemas.py`,
 
 ---
 
-## The five claims, and the test that proves each
+## The six claims, and the test that proves each
 
 Say these on stage; every one is checkable, not asserted.
 
@@ -91,9 +91,16 @@ Say these on stage; every one is checkable, not asserted.
    `test_no_destructive_call_without_a_prior_approval` walks the event stream and
    fails if a destructive `tool_call` ever precedes its `approval_decision`.
 2. **"The diagnostic runs in a real sandbox."**
-   `tests/test_sandbox.py` — 15 tests. Network blocked, subprocess blocked, repo
-   invisible (`os.listdir()` sees only `diagnostics.py`), API keys absent from the
-   env, infinite loop killed, 4 GB allocation dies in the child not the parent.
+   `tests/test_sandbox.py` — 32 tests. Separate process, scrubbed env, network
+   blocked, subprocesses blocked, **filesystem confined to the working
+   directory** (it cannot read the repo, `/etc/passwd`, or the `.env` holding
+   the gateway key, and cannot write anywhere else), infinite loop killed by the
+   CPU cap.
+   **Say this precisely.** The memory cap is NOT part of the claim on a Mac:
+   macOS rejects `RLIMIT_AS`, `RLIMIT_DATA` and `RLIMIT_RSS` alike, so a 4 GB
+   allocation goes straight through. What protects us is process isolation plus
+   the wall-clock kill — the parent survives regardless. Claiming a memory limit
+   in front of a judge who knows macOS would cost more than it buys.
 3. **"It fails closed."**
    Timeout, dead bus, Ctrl-C, non-tty — every one denies. `tests/test_approval.py`.
 4. **"A rejection is respected."**
@@ -103,6 +110,13 @@ Say these on stage; every one is checkable, not asserted.
    `test_resume_still_asks_before_the_destructive_action` re-runs the invariant on
    a resumed run. `test_resume_honours_a_rejection_from_before_the_crash` proves you
    cannot turn a "no" into a "yes" by killing the process and retrying.
+6. **"The human is never asked to approve something the agent has not explained."**
+   `reason` is a required parameter on every gated tool, and if a model omits it
+   anyway the card falls back to the evidence on record. Proved by
+   `test_silent_destructive_call_still_gets_an_explained_card`,
+   `test_every_gated_tool_demands_a_reason` and
+   `test_a_model_that_omits_reason_entirely_does_not_crash`.
+   This claim was FALSE on the live gateway until 5d78ebe — see section 11.
 
 The correlation score in `DEMO_SCRIPT.md` (**0.76**) is pinned by
 `test_demo_scenario_scores_high`. Change the scenario timings and that test tells
@@ -184,6 +198,20 @@ mid-demo to show there is nothing up our sleeve.
 
 ## Where the bodies are buried
 
+- **A model that says nothing still has to explain itself.** Every gated tool
+  carries a harness-injected required `reason` parameter (`agent/registry.py`,
+  `_with_reason`). It is NOT a tool parameter — `core.py` strips it before
+  dispatch, because `rollback_service(service, to_version)` would die on an
+  unexpected keyword. `open_revert_pr` is the one exception: it declares its own
+  `reason` and puts it in the PR body, so there it is read and left in place.
+  The strip decides from the impl's signature, so a new gated tool cannot get
+  this wrong by omission.
+- **`RESULT`, not `result`.** The sandbox only reads uppercase `RESULT`. A
+  lowercase assignment used to return `ok: true, result: null` — a silent no-op
+  that reads as success. It now comes back with a hint naming the mistake.
+- **Sandbox errors name the failing line and dump the real PAYLOAD shape.** A
+  bare `TypeError: list indices must be integers` cost a live gateway run an
+  extra sandbox round-trip.
 - **It is TrueFoundry, not "TrueForge".** The original plan had the name wrong
   throughout; corrected repo-wide. It is an LLM **gateway** (an OpenAI-compatible
   proxy), not an agent-harness SDK — which is why A2 was a config change, not a
@@ -205,8 +233,9 @@ mid-demo to show there is nothing up our sleeve.
   leave the laptop.
 
 ## If you are resuming cold
-1. `.venv/bin/python run_agent.py --selftest` → expect `PASS` (mock env must be up).
-2. `.venv/bin/python -m pytest` → expect **136 passed**.
+1. `.venv/bin/python run_agent.py --selftest` → `PASS` with the mock env up, or
+   `OK (wiring verified)` with it down. Only `FAIL` means the build is wrong.
+2. `.venv/bin/python -m pytest` → expect **215 passed**.
 3. Do a full dashboard run (commands at the top). If that is green, the demo is safe.
 4. Then: A2 live (needs gateway onboarding) or A6 live (needs `gh` + a repo).
 
@@ -276,6 +305,17 @@ Confirmed working against my gate.
 `mock_env/`, `approval_server.py`, `ui/dashboard.html`, `DEMO_SCRIPT.md` are
 untouched and still yours. I only added a contract addendum to `EVENT_CONTRACT.md`.
 
+## 7a. Heads-up: the demo script's 0.76 is now actually true on the live path
+`DEMO_SCRIPT.md` narrates *"it writes a diagnostic and runs it in a sandbox to
+score the correlation: 0.76."* On `--provider sim` that was always true. On the
+**live gateway** it was not — the model guessed the function signature and the
+score was never computed, or it passed a subagent summary and scored 0.36.
+Fixed in PR #5 and re-verified live: one sandbox attempt, 0.76, recovered.
+
+So the narration is safe for both `make demo` and `make demo-live`. If you
+rehearse on the gateway and see anything other than 0.76, tell me — that means a
+regression, not a model quirk.
+
 ## 7. Your critical path, given where I am
 - **B6 (record the demo twice) is now the top priority.** The gateway is live and
   the whole loop is green *right now* — capture it while it is. Record the real
@@ -319,3 +359,190 @@ TRUEFOUNDRY_BASE_URL=https://pacific.truefoundry.cloud/api/llm
 TRUEFOUNDRY_MODEL=ms-openai-main/gpt-4o
 ```
 The `ms-` prefix is required. `--provider sim` still needs no key at all.
+
+---
+
+## 11. Full tester pass — what I ran and what it found
+
+Ran the whole stack as a tester, not as the author: live servers, real runs,
+adversarial probes. Everything below was executed, not inferred from the code.
+
+**Green:**
+- `215 passed` (mine 201 + Zeel's 14)
+- `--selftest` PASS with the servers up
+- sim run: 8 steps, correlation 0.76, service healthy
+- **live TrueFoundry runs x5**: 0.76 every time, real rationale on every card,
+  service healthy on v1.4.1
+- approve through the dashboard API -> rollback runs, service recovers
+- **deny** -> zero destructive calls, prod stays degraded, the agent stands down
+  without retrying or substituting another action
+- `kill -9` mid-approval -> `--resume` continues at step 6, same run_id, the
+  pending rollback is re-gated (NOT auto-executed), timeline replays without
+  duplicating (22 -> 24 events)
+- `scripts/demo.sh` -> both servers up, scenario reset, dashboard serves,
+  Ctrl-C cleans up with nothing left on :8000 / :8500
+- every test name cited in this document actually exists (checked mechanically)
+
+### Six bugs found and fixed
+
+**1. The approval card said "no rationale given" on every live run.** *(demo-fatal)*
+The rationale was only ever the prose in the same turn as the tool call, and
+gpt-4o fires `rollback_service` with an empty text field. The one thing a human
+reads before authorising a production rollback was blank on the real path — and
+it looked fine in sim, because the scripted provider always narrates.
+Fixed structurally: `reason` is a required parameter on every gated tool
+(`agent/registry.py`, `_with_reason`), plus a fallback chain (last thing the
+agent said -> the sandbox verdict) so the card is never blank even if a model
+ignores it. Commit `5d78ebe`.
+
+**2. The sandbox could read any file on the machine.** *(worst of the six)*
+It blocked sockets, subprocesses and dangerous imports — but nothing stopped
+`open('<repo>/.env').read()`. A snippet could hand the live TrueFoundry key back
+in its own result, and write anywhere on disk too. Verified by doing it: it
+leaked the real key. Scrubbing the environment is not enough when the secrets
+are also on disk. `sandbox/bootstrap.py` now confines every path-opening entry
+point — `builtins.open`, `io.open`, `io.FileIO`, and the `os` file functions —
+to the sandbox working directory. The stdlib still imports normally because
+importlib captured its own `_io` references at interpreter start; that is
+asserted, not assumed (`test_stdlib_imports_still_work_under_confinement`).
+**If a judge probes one thing, it is this.** It is now nine tests.
+
+**3. `test_memory_bomb_does_not_take_down_the_parent` passed for the wrong reason.**
+It asserted `not res["ok"]` on a 4 GB allocation. The allocation *succeeds* on
+macOS — the run only "failed" because a bytearray is not JSON serialisable, so
+the test would have passed with no limits whatsoever. macOS rejects every memory
+rlimit there is. The test now asserts what actually holds everywhere (the parent
+survives and stays usable) and the claim in section "six claims" was corrected
+to match. **Do not claim a memory cap on stage.**
+
+**4. `result = ...` silently returned nothing.** The sandbox reads uppercase
+`RESULT`; a lowercase assignment gave back `ok: true, result: null`, which reads
+as success and sends the model on with no evidence. Now returns a hint naming
+the exact mistake.
+
+**5. The timeline had no scroll container.** `#timeline` had no height or
+overflow rule, so `tl.scrollTop = tl.scrollHeight` was dead code and the card
+grew without limit — on a full run the approval buttons were pushed off-screen
+at the moment the operator needed them. Fixed, along with a navigation and
+interactivity pass on the dashboard; details in the Zeel section below.
+
+**6. Sandbox errors were unactionable.** `TypeError: list indices must be
+integers or slices, not str`, no line number, thrown when the model reached into
+PAYLOAD with the subagent-findings shape. It burned a whole extra sandbox
+round-trip every live run. Errors now name the failing line, show its source,
+and dump the real PAYLOAD keys and types.
+
+### Two things that are NOT bugs, so nobody re-derives them
+
+- **`scripts/demo.sh` looks like it leaks uvicorn on Ctrl-C — it does not.** It
+  only appears to when launched with `nohup ... &`: bash ignores SIGINT in
+  background jobs of a non-interactive shell, and a signal ignored on entry
+  cannot be trapped, so the INT trap never fires. Under a normal foreground
+  Ctrl-C the cleanup is correct. Verified by restoring the disposition:
+  `perl -e '$SIG{INT}="DEFAULT"; exec @ARGV' scripts/demo.sh`.
+- **`pathlib` is unusable inside the sandbox.** It imports `urllib`, which is on
+  the denylist, so the error reads `'urllib' is not importable`. Pre-existing and
+  harmless — the diagnostics helpers do not need it — but the message is
+  confusing if you hit it. Use `open()` and `os.path`.
+
+### `ui/dashboard.html` — Zeel, read this bit
+
+I did a navigation and interactivity pass on your file. Everything you built is
+intact; nothing was rewritten for the sake of it. Revert any of it freely — but
+please keep the first item, it is a real bug.
+
+**The bug.** `#timeline` had no height or overflow rule at all, so
+`tl.scrollTop = tl.scrollHeight` at the end of `render()` was dead code and the
+timeline grew without limit. On a full run (~25 events) the card pushed the
+approval buttons off the bottom of the screen — the operator had to scroll up to
+find them, at the exact moment the demo depends on clicking them. It is now a
+`58vh` scroll container.
+
+**Then, because it now scrolls, it had to stop fighting the operator:**
+- **Renders only when the content changed.** It rebuilt `innerHTML` on every
+  1.2s poll, which destroyed text selection and yanked scroll position back to
+  the bottom. A row signature is compared first, so an idle dashboard is
+  completely stable to read from.
+- **Auto-scroll only when already at the bottom.** Scroll up to read something
+  and it holds your place; a `↓ N new` pill appears and takes you back.
+- **Filter chips** — All / Agent / Tools / Sandbox / Approvals / Subagents, with
+  live counts. Pure CSS off one `data-filter` attribute, so filtering never
+  re-renders and never disturbs scroll or selection.
+- **Keyboard**: `A` approve, `R` reject, `1`-`6` filters, `Esc` all, `J` jump to
+  latest. The a/r shortcuts sit behind a `pendingKey` guard so a stray keypress
+  between runs cannot authorise anything — `test_keyboard_cannot_approve_when
+  _no_gate_is_open` pins that, and it fails if the guard moves.
+- **`show full` disclosures** on long tool results and subagent findings, with
+  open ones surviving a re-render.
+- **Sticky approval card** and an offline banner after two failed polls, so a
+  stale dashboard never looks live.
+- `.reason` got `pre-wrap` + `overflow-wrap:anywhere` + `max-height`, because
+  rationales are multi-line now (core.py's fallback chain).
+- Fixed a latent escaping bug: `escapeHtml(json).slice(0,180)` truncated *after*
+  escaping, which can cut an entity in half (`&am`) and render as literal
+  garbage. It clips first now.
+
+**`tests/test_dashboard.py` is new — 13 tests, no browser needed.** The ones
+that matter to you: every event kind must have an icon, a filter group, and a
+renderer, so adding a kind without wiring it up is a red build rather than an
+invisible row. Plus: no unescaped interpolation reaches `innerHTML`, the
+rationale is set with `textContent`, and the page stays a single self-contained
+file. All five were mutation-tested — I broke each one deliberately and
+confirmed the suite caught it.
+
+Verified against a real captured event stream (pending gate, completed run, and
+a live gateway run) plus 12 deliberately hostile events with `<script>` and
+`<img onerror>` in every field: zero injections survived.
+
+This is the third time I have edited your file — the other two are in section 9.
+
+---
+
+## 12. Merged with Zeel's QA pass — the final set
+
+Merged `origin/master` into this branch. Git auto-merged both overlapping files
+(`tests/test_contracts.py`, `ui/dashboard.html`) with no conflict markers, but
+auto-merged is not the same as still correct, so the whole thing was re-verified
+by running it.
+
+### What she found — one of these is the most important bug in the project
+
+1. **The approval gate failed OPEN across runs.** `GET /decision` matched on
+   action name alone, and action names are not unique between runs. Approve a
+   rollback once, start a second run without resetting the bus, and the new run
+   executed with nobody at the keyboard — recording `by: "human"` for a decision
+   no human made. **This is claim 1, the invariant the entire demo rests on.**
+   Her fix is on the bus, which is the only place it can work: our own stale-id
+   guard (`ApprovalGate._seen`) lives in process memory and is empty in a freshly
+   started process. Reproduced end to end on the merged tree — run 2 now waits,
+   executes nothing, production stays degraded.
+2. **The environment healed on any version string.** Rolling back to
+   `v9.9.9-never-shipped`, or to the bad deploy `v1.4.2` itself, both reported
+   healthy — quietly rewarding a wrong diagnosis and hollowing out the claim that
+   the scenario forces real reasoning. Verified: both now refused, `v1.4.1` heals.
+3. **A rejected run showed INVESTIGATING forever**, and the "Resolved" banner
+   leaked across a `/reset`. Her `STOOD DOWN` / `FINISHED` branches fix it.
+4. `.gitattributes` pins shell scripts to LF so the launcher survives a Windows
+   clone.
+
+### Merge verification — every line of this was executed
+
+- `215 passed`, `--selftest` PASS
+- fail-open scenario reproduced end to end: run 2 waits, executes nothing
+- version guard: `v9.9.9` and `v1.4.2` refused, `v1.4.1` heals
+- sandbox confinement intact: 5/5 escapes blocked, real work still runs
+- dashboard renders all three terminal states — her `STOOD DOWN` and `FINISHED`
+  alongside my filters, scroll container and keyboard shortcuts — checked against
+  real captured streams for a rejected run, an approved run, and an open gate
+- live gateway run: 0.76, real rationale on the card, service healthy
+- `kill -9` mid-approval then `--resume`: same run_id, pending call re-gated,
+  zero rollbacks before the human
+- `scripts/demo.sh` clean start to finish, Ctrl-C leaves nothing behind
+
+### One process note, because it cost time
+
+The first fail-open re-test appeared to FAIL after merging. It had not: the
+servers were the ones started before the merge, and **uvicorn does not reload**.
+Restarting them showed her fix working correctly. Anything that tests the bus or
+the mock env has to restart them first — a stale uvicorn will happily tell you a
+fix does not work.

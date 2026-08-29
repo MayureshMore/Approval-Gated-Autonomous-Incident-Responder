@@ -8,18 +8,75 @@ deploy correlates with the incident, so the diagnosis is evidence-backed.
 In the demo: the agent calls get_recent_deploys + get_logs, then runs
 correlate_deploy_to_incident(...) in the sandbox and cites the score in its reasoning.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 
-def _parse(ts: str) -> datetime:
-    return datetime.fromisoformat(ts)
+def _as_utc(dt: datetime) -> datetime:
+    """Give a naive datetime a UTC tzinfo.
+
+    The environment emits offset-aware timestamps, so a naive datetime from the
+    agent would blow up on subtraction ("can't subtract offset-naive and
+    offset-aware"). Assuming UTC is right here: every timestamp in this system
+    is UTC, and refusing would waste a sandbox run mid-incident.
+    """
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _parse(ts) -> datetime:
+    """Accept an ISO string or a datetime.
+
+    The agent writes this call itself, so it may hand us either. Being strict
+    here buys nothing and costs a wasted sandbox run mid-incident.
+    """
+    if isinstance(ts, datetime):
+        return _as_utc(ts)
+    if isinstance(ts, str):
+        return _as_utc(datetime.fromisoformat(ts))
+    raise TypeError(
+        f"expected an ISO-8601 timestamp string or datetime, got {type(ts).__name__}: {ts!r}")
+
+
+def _message_of(log) -> str:
+    """A log line may arrive as {'message': ...} or as a bare string."""
+    if isinstance(log, str):
+        return log
+    if isinstance(log, dict):
+        return str(log.get("message", ""))
+    return str(log)
+
+
+def _check_error_logs(error_logs) -> None:
+    """Reject a summary object loudly.
+
+    Iterating a dict yields its keys, so passing a subagent's findings summary
+    here silently matched nothing and produced a plausible-looking low score
+    instead of an error — the worst failure mode available.
+    """
+    if isinstance(error_logs, dict):
+        raise TypeError(
+            "error_logs must be the list of log lines from get_logs(), not a summary "
+            f"object. Got a dict with keys {sorted(error_logs)[:5]}.")
+    if not isinstance(error_logs, list):
+        raise TypeError(
+            f"error_logs must be a list from get_logs(), got {type(error_logs).__name__}")
+
+
+def _check_deploys(deploys) -> None:
+    """Fail with a message the agent can act on, not a cryptic TypeError."""
+    if not isinstance(deploys, list):
+        raise TypeError(f"deploys must be a list of dicts, got {type(deploys).__name__}")
+    for d in deploys:
+        if not isinstance(d, dict) or "deployed_at" not in d:
+            raise TypeError(
+                "each deploy must be a dict with 'version' and 'deployed_at' — pass the "
+                f"list from get_recent_deploys() unchanged. Got: {d!r}")
 
 
 def correlate_deploy_to_incident(
     alert_fired_at: str,
     deploys: list,
-    error_logs: list,
+    error_logs: Optional[list] = None,
     window_minutes: int = 30,
 ) -> dict:
     """
@@ -28,6 +85,9 @@ def correlate_deploy_to_incident(
     Returns the prime-suspect deploy, minutes between deploy and alert, whether
     any error log references the deployed version, and a 0-1 suspicion score.
     """
+    _check_deploys(deploys)
+    error_logs = [] if error_logs is None else error_logs
+    _check_error_logs(error_logs)
     alert_t = _parse(alert_fired_at)
 
     # Candidate deploys: shipped BEFORE the alert, within the window.
@@ -51,7 +111,7 @@ def correlate_deploy_to_incident(
 
     # Do any error logs name the suspect version? Strong signal.
     version = suspect["version"]
-    version_mentioned = any(version in (l.get("message", "")) for l in error_logs)
+    version_mentioned = any(version in _message_of(l) for l in error_logs)
 
     # Score: closer in time = higher; version named in logs = big boost.
     proximity = max(0.0, 1.0 - (delta_min / window_minutes))  # 1.0 == same minute
@@ -75,6 +135,7 @@ def recommend_rollback_target(deploys: list, current_version: Optional[str] = No
     """Pick the last known-good version to roll back to (the deploy before current)."""
     if not deploys:
         return None
+    _check_deploys(deploys)
     ordered = sorted(deploys, key=lambda d: _parse(d["deployed_at"]), reverse=True)
     current = current_version or (ordered[0]["version"] if ordered else None)
     for d in ordered:

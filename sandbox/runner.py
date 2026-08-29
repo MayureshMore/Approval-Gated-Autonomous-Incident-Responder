@@ -114,7 +114,7 @@ def run_diagnostic(code: str, payload: Optional[dict] = None) -> dict:
     """
     res = run_python(code, payload=payload)
     # Keep the shape flat and small — this goes back into the model's context.
-    return {
+    out = {
         "ok": res.get("ok"),
         "result": res.get("result"),
         "stdout": (res.get("stdout") or "")[:1500],
@@ -122,6 +122,11 @@ def run_diagnostic(code: str, payload: Optional[dict] = None) -> dict:
         "duration_ms": res.get("duration_ms"),
         "sandboxed": True,
     }
+    # Only present when the snippet ran clean but returned nothing, which
+    # otherwise reads as success and sends the model on with no evidence.
+    if res.get("hint"):
+        out["hint"] = res["hint"]
+    return out
 
 
 # The snippet the agent is expected to converge on. Also used by the sim provider

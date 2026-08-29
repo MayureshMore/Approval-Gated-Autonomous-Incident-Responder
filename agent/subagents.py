@@ -55,6 +55,10 @@ def _logs_lane(impls, service) -> dict:
                        for tok in line.get("message", "").split()
                        if tok.startswith("v") and any(c.isdigit() for c in tok)})
     return {
+        # The raw lines travel with the summary: the main agent feeds these
+        # straight into correlate_deploy_to_incident, and a summary object in
+        # their place scores the incident wrong.
+        "lines": errors,
         "error_count": len(errors),
         "first_error": signature,
         "versions_named_in_errors": versions,

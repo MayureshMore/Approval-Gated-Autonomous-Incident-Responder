@@ -83,3 +83,91 @@ def test_rollback_target_ignores_ordering_of_the_input():
 def test_rollback_target_none_when_nothing_to_roll_back_to():
     assert recommend_rollback_target(_deploys(("v1.4.2", 15)), "v1.4.2") is None
     assert recommend_rollback_target([], "v1") is None
+
+
+# --- tolerant inputs -------------------------------------------------------
+# Every case here is a shape a real model actually produced during a live
+# gateway run, where three sandbox attempts failed in a row and the correlation
+# score the demo is built around was never computed.
+
+def test_accepts_datetime_as_well_as_iso_string():
+    from datetime import datetime
+    out = correlate_deploy_to_incident(T - timedelta(minutes=3), _deploys(("v1.4.2", 15)), [])
+    assert out["suspect"] == "v1.4.2"
+
+
+def test_accepts_log_lines_as_bare_strings():
+    """get_logs() returns dicts, but a model may pass just the messages."""
+    out = correlate_deploy_to_incident(
+        _iso(minutes=3), _deploys(("v1.4.2", 15)), ["NullPointer after v1.4.2 config change"])
+    assert out["version_referenced_in_error_logs"] is True
+
+
+def test_error_logs_is_optional():
+    out = correlate_deploy_to_incident(_iso(minutes=3), _deploys(("v1.4.2", 15)))
+    assert out["suspect"] == "v1.4.2"
+
+
+def test_bad_timestamp_names_what_was_expected():
+    with pytest.raises(TypeError, match="ISO-8601"):
+        correlate_deploy_to_incident(12345, _deploys(("v1", 5)), [])
+
+
+def test_deploys_as_bare_strings_gives_an_actionable_error():
+    """The exact failure from the live run: a cryptic 'fromisoformat: argument
+    must be str' told the model nothing. Name the expected shape instead."""
+    with pytest.raises(TypeError, match="get_recent_deploys"):
+        correlate_deploy_to_incident(_iso(minutes=3), ["2026-08-29T21:00:00+00:00"], [])
+
+
+def test_deploys_not_a_list_is_rejected_clearly():
+    with pytest.raises(TypeError, match="must be a list"):
+        correlate_deploy_to_incident(_iso(minutes=3), "v1.4.2", [])
+
+
+def test_rollback_target_also_validates_shape():
+    with pytest.raises(TypeError, match="get_recent_deploys"):
+        recommend_rollback_target(["v1.4.2", "v1.4.1"], "v1.4.2")
+
+
+def test_a_summary_object_is_rejected_rather_than_scored_wrong():
+    """
+    Live-run regression. With --subagents the model passed a subagent's findings
+    dict as error_logs. Iterating a dict yields its KEYS, so nothing matched the
+    version and the incident scored 0.36 instead of 0.76 — a plausible-looking
+    wrong answer, which is worse than an error.
+    """
+    summary = {"error_count": 3, "first_error": "NullPointer after v1.4.2",
+               "versions_named_in_errors": ["v1.4.2"], "verdict": "a release is implicated"}
+    with pytest.raises(TypeError, match="not a summary object"):
+        correlate_deploy_to_incident(_iso(minutes=3), _deploys(("v1.4.2", 15)), summary)
+
+
+def test_the_subagent_lines_field_scores_correctly():
+    """The fix pairs with subagents carrying their raw lines: feeding those
+    through must reproduce the demo's 0.76."""
+    lines = [{"level": "ERROR", "message": "NullPointer in PaymentProcessor after v1.4.2"}]
+    out = correlate_deploy_to_incident(_iso(minutes=3), _deploys(("v1.4.2", 15)), lines)
+    assert out["suspicion_score"] == 0.76
+
+
+def test_naive_datetime_is_treated_as_utc():
+    """
+    Accepting datetimes was pointless while a naive one still crashed: the
+    environment emits offset-aware timestamps, so subtraction raised
+    "can't subtract offset-naive and offset-aware datetimes".
+    """
+    from datetime import datetime
+    # Naive but UTC — which is what _as_utc documents and what this system emits.
+    naive = (datetime.now(timezone.utc) - timedelta(minutes=3)).replace(tzinfo=None)
+    out = correlate_deploy_to_incident(naive, _deploys(("v1.4.2", 15)), [])
+    assert out["suspect"] == "v1.4.2"
+    assert out["minutes_before_alert"] > 0
+
+
+def test_naive_deploy_timestamps_also_work():
+    from datetime import datetime
+    naive_deploy = (datetime.now(timezone.utc) - timedelta(minutes=15)).replace(tzinfo=None)
+    deploys = [{"version": "v1.4.2", "deployed_at": naive_deploy}]
+    out = correlate_deploy_to_incident(_iso(minutes=3), deploys, [])
+    assert out["suspect"] == "v1.4.2"

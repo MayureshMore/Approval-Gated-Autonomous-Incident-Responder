@@ -6,12 +6,15 @@ field or invents an event kind, the dashboard silently stops rendering and we
 find out on stage. These tests turn that into a red build instead.
 """
 import inspect
+import os
 
 import pytest
 
 import tools
 from agent.bus import CONTRACT_KINDS, EXTENDED_KINDS
-from agent.registry import REQUIRES_APPROVAL, build_registry
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from agent.registry import APPROVAL_REASON_PARAM, REQUIRES_APPROVAL, build_registry
 
 
 # --- TOOL_CONTRACT.md ------------------------------------------------------
@@ -58,7 +61,12 @@ def test_every_destructive_tool_is_gated():
 
 
 def test_schemas_and_implementations_agree():
-    """Every declared parameter must exist on the implementation's signature."""
+    """Every declared parameter must exist on the implementation's signature.
+
+    `reason` is the one exception: the harness injects it onto gated tools to
+    carry the model's justification to the human, and core.py strips it before
+    dispatch. test_harness_reason_never_reaches_a_tool covers that seam.
+    """
     impls, schemas = build_registry(include_github=True)
     for s in schemas:
         name = s["function"]["name"]
@@ -66,7 +74,52 @@ def test_schemas_and_implementations_agree():
         params = inspect.signature(impls[name]).parameters
         accepts_kwargs = any(p.kind == p.VAR_KEYWORD for p in params.values())
         if not accepts_kwargs:
+            declared -= {APPROVAL_REASON_PARAM} - set(params)
             assert declared <= set(params), f"{name}: schema declares {declared - set(params)}"
+
+
+def test_every_gated_tool_demands_a_reason():
+    """A human cannot approve what the agent has not explained."""
+    _, schemas = build_registry(include_github=True)
+    gated = [s["function"] for s in schemas if s["function"]["name"] in REQUIRES_APPROVAL]
+    assert gated, "no gated tools in the registry"
+    for fn in gated:
+        params = fn["parameters"]
+        assert APPROVAL_REASON_PARAM in params["properties"], f"{fn['name']} has no reason"
+        assert APPROVAL_REASON_PARAM in params["required"], f"{fn['name']}: reason is optional"
+
+
+def test_read_only_tools_are_not_burdened_with_a_reason():
+    _, schemas = build_registry(include_github=True)
+    for s in schemas:
+        fn = s["function"]
+        if fn["name"] not in REQUIRES_APPROVAL:
+            assert APPROVAL_REASON_PARAM not in fn["parameters"].get("properties", {}), fn["name"]
+
+
+def test_open_revert_pr_keeps_its_own_reason():
+    """It declares `reason` itself and puts it in the PR body — the harness must
+    not shadow it with a second definition or drop it from `required`."""
+    _, schemas = build_registry(include_github=True)
+    fn = next(s["function"] for s in schemas if s["function"]["name"] == "open_revert_pr")
+    assert "PR body" in fn["parameters"]["properties"][APPROVAL_REASON_PARAM]["description"]
+    assert fn["parameters"]["required"].count(APPROVAL_REASON_PARAM) == 1
+
+
+def test_harness_reason_never_reaches_a_tool():
+    """The injected `reason` must be stripped before dispatch — except on
+    open_revert_pr, whose implementation genuinely takes one."""
+    from agent.core import _impl_accepts
+
+    impls, schemas = build_registry(include_github=True)
+    for s in schemas:
+        name = s["function"]["name"]
+        if name not in REQUIRES_APPROVAL:
+            continue
+        accepts = _impl_accepts(impls[name], APPROVAL_REASON_PARAM)
+        assert accepts == (name == "open_revert_pr"), (
+            f"{name}: impl accepts reason={accepts}; core.py strips based on this, "
+            "so a mismatch means the call dies on an unexpected keyword")
 
 
 def test_reset_restores_the_degraded_scenario(env):
@@ -159,3 +212,75 @@ def test_dashboard_can_find_service_health_in_the_stream(env, bus):
     assert len(health) >= 2, "dashboard needs a before AND an after reading"
     assert health[0]["result"]["status"] == "degraded"
     assert health[-1]["result"]["status"] == "healthy"
+
+
+# --- the sandbox tool description ------------------------------------------
+def test_sandbox_description_carries_the_real_signatures():
+    """
+    A model that has to guess a signature guesses wrong. In a live run GPT-4o
+    burned three sandbox attempts on `deploy_times=`, a missing positional, and
+    a type error, and never produced the correlation score. The description is
+    generated from the code, so this also guards against drift.
+    """
+    import inspect
+
+    import diagnostics
+    from agent.registry import SANDBOX_TOOL_SCHEMA
+
+    def squash(text: str) -> str:
+        """inspect renders `x: T = None`, ast renders `x: T=None`. Same signature."""
+        return "".join(text.split())
+
+    desc = squash(SANDBOX_TOOL_SCHEMA["function"]["description"])
+    for fn in (diagnostics.correlate_deploy_to_incident,
+               diagnostics.recommend_rollback_target):
+        assert squash(f"{fn.__name__}{inspect.signature(fn)}") in desc, \
+            f"{fn.__name__}'s real signature is not shown to the model"
+
+
+def test_sandbox_description_shows_a_runnable_example():
+    from agent.registry import SANDBOX_EXAMPLE, SANDBOX_TOOL_SCHEMA
+    assert SANDBOX_EXAMPLE in SANDBOX_TOOL_SCHEMA["function"]["description"]
+    assert "PAYLOAD[" in SANDBOX_EXAMPLE and "RESULT =" in SANDBOX_EXAMPLE
+
+
+def test_the_documented_example_actually_runs(demo_payload):
+    """The example we hand the model must work verbatim in the real sandbox."""
+    from agent.registry import SANDBOX_EXAMPLE
+    from sandbox.runner import run_diagnostic
+
+    out = run_diagnostic(SANDBOX_EXAMPLE, demo_payload)
+    assert out["ok"], out["error"]
+    assert out["result"]["suspect"] == "v1.4.2"
+    assert out["result"]["rollback_target"] == "v1.4.1"
+
+
+def test_registry_does_not_import_the_sandbox_module():
+    """
+    `diagnostics` is sandbox-destined code; the parent process must never
+    execute it. Signatures are read with `ast`, not by importing. Today the
+    module only defines functions — the point of the sandbox is not having to
+    keep re-checking that.
+    """
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys; sys.path.insert(0, '.');"
+        "import agent.registry;"
+        "print('diagnostics' in sys.modules)"
+    )
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+                         text=True, cwd=REPO_ROOT)
+    assert out.stdout.strip() == "False", "importing agent.registry executed diagnostics.py"
+
+
+def test_signature_extraction_fails_loudly_if_a_helper_disappears(tmp_path):
+    """Silently dropping a helper from the description would send the model back
+    to guessing — the exact failure this whole mechanism exists to prevent."""
+    from agent.registry import _diagnostics_api
+
+    stub = tmp_path / "diagnostics.py"
+    stub.write_text("def something_else():\n    pass\n")
+    with pytest.raises(RuntimeError, match="no longer defines"):
+        _diagnostics_api(str(stub))

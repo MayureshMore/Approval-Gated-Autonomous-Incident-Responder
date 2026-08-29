@@ -61,8 +61,26 @@ def test_infinite_loop_is_killed():
 
 
 def test_memory_bomb_does_not_take_down_the_parent():
-    res = run_python("RESULT = bytearray(4 * 1024 * 1024 * 1024)", timeout=8)
-    assert not res["ok"]                 # died in the child; we are still here
+    """The guarantee is that the PARENT survives — not that the child is capped.
+
+    This test used to read `assert not res["ok"]` and passed for the wrong
+    reason: macOS rejects RLIMIT_AS, RLIMIT_DATA and RLIMIT_RSS alike, so there
+    is no address-space cap at all and the 4 GB allocation goes straight
+    through. The run "failed" only because a bytearray is not JSON
+    serialisable — it would have passed with no limits whatsoever. Assert what
+    actually holds on every platform instead.
+    """
+    res = run_python("RESULT = len(bytearray(4 * 1024 * 1024 * 1024))", timeout=30)
+
+    if res["ok"]:
+        # No enforceable memory cap here (macOS). Process isolation and the
+        # wall-clock kill are what protect us, and that is the honest claim.
+        assert res["result"] == 4 * 1024 * 1024 * 1024
+    else:
+        assert "MemoryError" in (res["error"] or "") or "signal" in (res["error"] or "")
+
+    # Whatever happened in there, we are still running and still usable.
+    assert run_python("RESULT = 'alive'")["result"] == "alive"
 
 
 # --- failure surfaces as data, never as a crash ----------------------------
@@ -84,3 +102,148 @@ def test_unserialisable_result_is_rejected_not_raised():
 def test_missing_result_is_none_not_an_error():
     res = run_python("x = 5")
     assert res["ok"] and res["result"] is None
+
+
+# --- a clean run that returns nothing must not look like success ------------
+def test_lowercase_result_is_called_out_by_name():
+    """`result = ...` silently vanishes; ok=true with a null result reads as
+    success and sends the model on with no evidence. Say so instead."""
+    out = run_diagnostic("result = {'suspicion': 0.9}")
+
+    assert out["ok"] is True
+    assert out["result"] is None
+    assert "RESULT" in out["hint"]
+    assert "lowercase" in out["hint"]
+
+
+def test_forgetting_to_assign_at_all_is_called_out():
+    out = run_diagnostic("1 + 1")
+
+    assert out["ok"] is True
+    assert "RESULT = " in out["hint"]
+    assert "lowercase" not in out["hint"]
+
+
+def test_a_real_result_carries_no_hint():
+    out = run_diagnostic("RESULT = {'suspicion': 0.9}")
+
+    assert out["result"] == {"suspicion": 0.9}
+    assert "hint" not in out
+
+
+def test_a_falsy_but_real_result_is_not_mistaken_for_nothing():
+    """RESULT = 0 / [] / "" are answers, not omissions."""
+    for code, expected in (("RESULT = 0", 0), ("RESULT = []", []), ("RESULT = ''", "")):
+        out = run_diagnostic(code)
+        assert out["result"] == expected, code
+        assert "hint" not in out, f"{code} was wrongly flagged as returning nothing"
+
+
+# --- an error the agent can act on -----------------------------------------
+def test_error_names_the_failing_line():
+    """A bare "TypeError: list indices..." cost a live run an extra sandbox
+    round-trip. The message must say where."""
+    out = run_diagnostic('a = [1, 2]\nRESULT = a["key"]\n')
+
+    assert out["ok"] is False
+    assert "TypeError" in out["error"]
+    assert "line 2" in out["error"]
+    assert 'a["key"]' in out["error"]
+
+
+def test_error_shows_the_real_payload_shape():
+    """The usual mistake is reaching into PAYLOAD with a key that is not there."""
+    out = run_diagnostic('RESULT = PAYLOAD["deploys"]["alert_fired_at"]',
+                         {"alert_fired_at": "2026-01-01T00:00:00+00:00",
+                          "deploys": [{"version": "v1"}]})
+
+    assert "PAYLOAD contains" in out["error"]
+    assert "alert_fired_at: str" in out["error"]
+    assert "deploys: list[1]" in out["error"]
+
+
+def test_payload_shape_is_omitted_for_unrelated_errors():
+    """Only lookup/shape errors get the PAYLOAD dump; noise helps nobody."""
+    out = run_diagnostic("RESULT = 1 / 0", {"deploys": []})
+
+    assert "ZeroDivisionError" in out["error"]
+    assert "PAYLOAD contains" not in out["error"]
+
+
+def test_a_syntax_error_still_reports_cleanly():
+    out = run_diagnostic("def broken(:\n  pass")
+
+    assert out["ok"] is False
+    assert "SyntaxError" in out["error"]
+
+
+# --- filesystem confinement ------------------------------------------------
+# Until this went in, the sandbox blocked sockets and subprocesses but let a
+# snippet do open('/path/to/repo/.env').read() and hand the gateway key back in
+# its own result. Scrubbing the environment is not enough when the secrets are
+# also sitting on disk.
+import os as _os
+
+REPO = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+
+
+def _blocked(code: str) -> str:
+    out = run_python(code)
+    assert not out["ok"], f"escape succeeded: {out.get('result')!r}"
+    return out["error"] or ""
+
+
+def test_cannot_read_the_dotenv_that_holds_the_gateway_key():
+    err = _blocked(f"RESULT = open({REPO + '/.env'!r}).read()")
+    assert "outside the sandbox" in err
+
+
+def test_cannot_read_arbitrary_system_files():
+    assert "outside the sandbox" in _blocked("RESULT = open('/etc/passwd').read()")
+
+
+def test_cannot_read_the_projects_own_source():
+    assert "outside the sandbox" in _blocked(f"RESULT = open({REPO + '/tools.py'!r}).read()")
+
+
+def test_cannot_write_outside_the_workdir(tmp_path):
+    target = str(tmp_path / "escape.txt")
+    assert "outside the sandbox" in _blocked(f"RESULT = open({target!r}, 'w').write('x')")
+    assert not _os.path.exists(target), "the sandbox wrote a file outside its workdir"
+
+
+def test_cannot_list_directories_outside_the_workdir():
+    assert "outside the sandbox" in _blocked(f"import os\nRESULT = os.listdir({REPO!r})")
+    assert "outside the sandbox" in _blocked("import os\nRESULT = os.listdir('/')")
+
+
+def test_low_level_file_apis_are_confined_too():
+    """builtins.open is not the only door: io and os.open reach the same files."""
+    env = REPO + "/.env"
+    assert "outside the sandbox" in _blocked(f"import io\nRESULT = io.open({env!r}).read()")
+    assert "outside the sandbox" in _blocked(
+        f"import io\nRESULT = io.FileIO({env!r}).read().decode()")
+    assert "outside the sandbox" in _blocked(
+        f"import os\nRESULT = os.read(os.open({env!r}, os.O_RDONLY), 10).decode()")
+
+
+def test_the_workdir_itself_stays_usable():
+    """Confinement must not break the diagnostic's actual job."""
+    out = run_python("open('scratch.txt', 'w').write('data')\n"
+                     "RESULT = open('scratch.txt').read()")
+    assert out["ok"] and out["result"] == "data", out.get("error")
+
+
+def test_stdlib_imports_still_work_under_confinement():
+    """The import machinery reads .py files from outside the workdir. It holds
+    its own references to _io from interpreter start, so the guards do not
+    reach it — but that is a claim worth failing loudly on."""
+    out = run_python("import json, statistics, datetime, re, collections\n"
+                     "RESULT = [json.dumps({'a': 1}), statistics.mean([1, 2, 3])]")
+    assert out["ok"], out.get("error")
+    assert out["result"] == ['{"a": 1}', 2]
+
+
+def test_the_diagnostics_module_still_imports():
+    out = run_python("from diagnostics import correlate_deploy_to_incident\nRESULT = 'ok'")
+    assert out["ok"] and out["result"] == "ok", out.get("error")

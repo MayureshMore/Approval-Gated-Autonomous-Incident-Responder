@@ -9,6 +9,7 @@ import pytest
 
 from agent.approval import ApprovalGate, Decision
 from agent.core import IncidentAgent
+from agent.providers.base import AssistantTurn, ToolCall
 from agent.providers.sim import SimProvider
 
 DESTRUCTIVE = {"rollback_service", "restart_service", "scale_service", "open_revert_pr"}
@@ -131,3 +132,160 @@ def test_environment_outage_is_reported_not_raised(env, bus, monkeypatch):
 def test_step_budget_is_enforced(env, bus):
     report, _ = _run(bus, approve=True, max_steps=2)
     assert report.steps <= 2
+
+
+def test_subagent_findings_carry_the_raw_log_lines(env, bus):
+    """
+    The main agent feeds these into the sandbox diagnostic. Without the raw
+    lines it passes the summary instead and scores the incident wrong.
+    """
+    _run(bus, approve=True, use_subagents=True)
+    logs = [e for e in bus.of("subagent_finished") if e["subagent"] == "logs"][0]["findings"]
+    assert isinstance(logs["lines"], list) and logs["lines"], "raw lines must travel with the summary"
+    assert all(isinstance(l, dict) and "message" in l for l in logs["lines"])
+
+    from diagnostics import correlate_deploy_to_incident
+    alerts = [e for e in bus.of("tool_result") if e["tool"] == "get_active_alerts"][0]["result"]
+    deploys = [e for e in bus.of("tool_result") if e["tool"] == "get_recent_deploys"][0]["result"]
+    out = correlate_deploy_to_incident(alerts[0]["fired_at"], deploys, logs["lines"])
+    assert out["version_referenced_in_error_logs"] is True
+    assert out["suspicion_score"] >= 0.7
+
+
+# --- the approval card must never be blank ---------------------------------
+class SilentProvider:
+    """A model that fires a destructive call with no accompanying prose.
+
+    This is not hypothetical: gpt-4o over the TrueFoundry gateway does exactly
+    this. It ran the sandbox diagnostic, then called rollback_service with an
+    empty text field — which reached the approval card as "no rationale given".
+    """
+
+    name = "silent"
+
+    def __init__(self, narrate_first: bool = False):
+        self.narrate_first = narrate_first
+        self._turn = 0
+
+    def start(self, system, user):
+        pass
+
+    def step(self, schemas):
+        self._turn += 1
+        if self._turn == 1:
+            return AssistantTurn(
+                text="Correlating the deploy against the alert." if self.narrate_first else "",
+                tool_calls=[ToolCall("c1", "run_diagnostic", {
+                    "code": ("from diagnostics import correlate_deploy_to_incident\n"
+                             "RESULT = correlate_deploy_to_incident(\n"
+                             "    PAYLOAD['alert_fired_at'], PAYLOAD['deploys'],\n"
+                             "    PAYLOAD['error_logs'])\n"),
+                    "payload": _diagnostic_payload(),
+                })])
+        if self._turn == 2:
+            # No text. This is the turn that used to produce a blank card.
+            return AssistantTurn(text="", tool_calls=[ToolCall(
+                "c2", "rollback_service",
+                {"service": "checkout-service", "to_version": "v1.4.1"})])
+        return AssistantTurn(text="done")
+
+    def record_tool_result(self, call, result):
+        pass
+
+
+def _diagnostic_payload() -> dict:
+    import tools
+    alerts = tools.get_active_alerts()
+    return {
+        "alert_fired_at": alerts[0]["fired_at"],
+        "deploys": tools.get_recent_deploys("checkout-service"),
+        "error_logs": tools.get_logs("checkout-service", level="ERROR"),
+    }
+
+
+def _ask_reason(bus, provider) -> str:
+    gate = ScriptedGate(bus, approve=False)
+    IncidentAgent(provider, bus=bus, gate=gate, max_steps=4).run()
+    rollbacks = [r for a, _, r in gate.asked if a == "rollback_service"]
+    assert rollbacks, f"rollback was never gated; asked={[a for a, _, _ in gate.asked]}"
+    return rollbacks[0]
+
+
+def test_silent_destructive_call_still_gets_an_explained_card(env, bus):
+    """A model that says nothing must not produce an unexplained approval card."""
+    reason = _ask_reason(bus, SilentProvider())
+
+    assert "no rationale given" not in reason
+    assert reason.strip(), "approval card reason was empty"
+    # It falls back to what the sandbox actually computed, and says so.
+    assert "gave no rationale" in reason
+    assert "v1.4.2" in reason, f"evidence missing from card: {reason!r}"
+
+
+def test_fallback_prefers_what_the_agent_last_said(env, bus):
+    reason = _ask_reason(bus, SilentProvider(narrate_first=True))
+
+    assert "Correlating the deploy against the alert." in reason
+    assert "last stated by the agent" in reason
+
+
+def test_a_stated_rationale_is_passed_through_verbatim(env, bus):
+    """The fallback must never overwrite a rationale the model did give."""
+    _, gate = _run(bus, approve=True)
+    rollbacks = [r for a, _, r in gate.asked if a == "rollback_service"]
+    assert rollbacks
+    assert "gave no rationale" not in rollbacks[0]
+
+
+# --- the harness-injected `reason` must reach the human, not the tool -------
+def _dispatch(bus, name: str, args: dict):
+    """Run one gated call through _handle with the real impl signatures."""
+    gate = ScriptedGate(bus, approve=True)
+    agent = IncidentAgent(None, bus=bus, gate=gate, include_github=True)
+    seen = {}
+
+    def rollback_service(service, to_version):
+        seen.update(service=service, to_version=to_version)
+        return {"ok": True}
+
+    def open_revert_pr(service, reason):
+        seen.update(service=service, reason=reason)
+        return {"ok": True}
+
+    agent.impls["rollback_service"] = rollback_service
+    agent.impls["open_revert_pr"] = open_revert_pr
+    agent._handle(ToolCall("t1", name, dict(args)), rationale="")
+    return seen, gate.asked[0]
+
+
+def test_injected_reason_is_stripped_before_the_tool_runs(env, bus):
+    """rollback_service(service, to_version) would die on an unexpected kwarg."""
+    seen, (action, card_args, card_reason) = _dispatch(
+        bus, "rollback_service",
+        {"service": "checkout-service", "to_version": "v1.4.1",
+         "reason": "v1.4.2 correlates at 0.76"})
+
+    assert "reason" not in seen
+    assert seen == {"service": "checkout-service", "to_version": "v1.4.1"}
+    # The human still sees it, and the card shows the args that actually ran.
+    assert card_reason == "v1.4.2 correlates at 0.76"
+    assert card_args == {"service": "checkout-service", "to_version": "v1.4.1"}
+
+
+def test_open_revert_pr_still_receives_its_own_reason(env, bus):
+    """Its `reason` is a real parameter — it goes in the PR body."""
+    seen, (_, _, card_reason) = _dispatch(
+        bus, "open_revert_pr",
+        {"service": "checkout-service", "reason": "revert the bad deploy"})
+
+    assert seen["reason"] == "revert the bad deploy"
+    assert card_reason == "revert the bad deploy"
+
+
+def test_a_model_that_omits_reason_entirely_does_not_crash(env, bus):
+    """Required in the schema is not a guarantee the model complies."""
+    seen, (_, _, card_reason) = _dispatch(
+        bus, "rollback_service", {"service": "checkout-service", "to_version": "v1.4.1"})
+
+    assert seen == {"service": "checkout-service", "to_version": "v1.4.1"}
+    assert "gave no rationale" in card_reason

@@ -11,11 +11,62 @@ chat wrapper:
 It also emits schemas in both OpenAI and Anthropic dialects from the same
 definitions, so switching provider never means editing a tool twice.
 """
+import ast
+import os
 from typing import Any, Callable
 
 import tools
 from sandbox.runner import run_diagnostic
 from tool_schemas import TOOL_SCHEMAS as ENV_TOOL_SCHEMAS
+
+DIAGNOSTICS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "diagnostics.py")
+SANDBOX_HELPERS = ("correlate_deploy_to_incident", "recommend_rollback_target")
+
+
+def _diagnostics_api(path: str = DIAGNOSTICS_PATH) -> str:
+    """Render the real signatures of the sandbox helpers.
+
+    Read out of the source with `ast`, deliberately NOT by importing the module:
+    `diagnostics` is sandbox-destined code, and the parent process should never
+    execute it. Today it only defines functions, but the whole point of the
+    sandbox is that we do not have to keep checking that.
+
+    Generated rather than hand-written because a model that has to guess a
+    signature guesses wrong — in a live gateway run GPT-4o burned three sandbox
+    attempts and never produced the correlation score the demo is built around.
+    Generating it also means the text cannot drift from the code.
+    """
+    with open(path) as f:
+        tree = ast.parse(f.read(), filename=path)
+
+    found = {
+        node.name: node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in SANDBOX_HELPERS
+    }
+    missing = [n for n in SANDBOX_HELPERS if n not in found]
+    if missing:
+        raise RuntimeError(f"diagnostics.py no longer defines {missing}")
+
+    lines = []
+    for name in SANDBOX_HELPERS:
+        node = found[name]
+        returns = f" -> {ast.unparse(node.returns)}" if node.returns else ""
+        summary = (ast.get_docstring(node) or "").strip().splitlines()
+        lines.append(f"  {name}({ast.unparse(node.args)}){returns}"
+                     + (f"\n      {summary[0]}" if summary else ""))
+    return "\n".join(lines)
+
+
+SANDBOX_EXAMPLE = """from diagnostics import correlate_deploy_to_incident, recommend_rollback_target
+corr = correlate_deploy_to_incident(
+    PAYLOAD["alert_fired_at"],   # the alert's fired_at, verbatim
+    PAYLOAD["deploys"],          # get_recent_deploys() output, unchanged
+    PAYLOAD["error_logs"],       # get_logs() output, unchanged
+)
+target = recommend_rollback_target(PAYLOAD["deploys"], PAYLOAD["current_version"])
+RESULT = {**corr, "rollback_target": target}"""
+
 
 # --- extra schemas (same OpenAI shape as tool_schemas.py) -------------------
 SANDBOX_TOOL_SCHEMA = {
@@ -24,17 +75,30 @@ SANDBOX_TOOL_SCHEMA = {
         "name": "run_diagnostic",
         "description": (
             "Execute a short Python diagnostic in an isolated sandbox to quantify a "
-            "hypothesis instead of eyeballing tool output. The module `diagnostics` is "
-            "importable (correlate_deploy_to_incident, recommend_rollback_target). Your "
-            "inputs arrive as the dict PAYLOAD; return by assigning to RESULT. No network "
-            "and no subprocesses are available. Use this before proposing a remediation."
+            "hypothesis instead of eyeballing tool output. Use this before proposing a "
+            "remediation.\n\n"
+            "Your inputs arrive as the dict PAYLOAD; return by assigning to RESULT. "
+            "No network and no subprocesses are available.\n\n"
+            "The module `diagnostics` is importable. Call these EXACTLY as shown — "
+            "pass tool output through unchanged, do not reformat it:\n"
+            f"{_diagnostics_api()}\n\n"
+            "`deploys` must be the list of dicts from get_recent_deploys() and "
+            "`error_logs` the list of log lines from get_logs(). Pass the raw lists, "
+            "never a subagent's findings summary — if you only have subagent findings, "
+            "use its `recent_deploys` and `lines` fields, or call the read-only tools "
+            "again to get the raw output.\n\n"
+            "Worked example:\n"
+            f"{SANDBOX_EXAMPLE}"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "code": {"type": "string", "description": "Python source to execute."},
                 "payload": {"type": "object",
-                            "description": "JSON inputs, available inside as PAYLOAD."},
+                            "description": "JSON inputs, available inside as PAYLOAD. For "
+                                           "the correlation helpers include alert_fired_at, "
+                                           "deploys, error_logs and current_version, copied "
+                                           "verbatim from the read-only tools."},
             },
             "required": ["code"],
         },
@@ -75,6 +139,40 @@ def _github_impl(service: str, reason: str) -> dict:
 REQUIRES_APPROVAL: set[str] = set(tools.REQUIRES_APPROVAL) | {"open_revert_pr"}
 
 
+# The harness adds this to every gated tool. It is not a tool parameter — no
+# implementation ever sees it (core.py strips it before dispatch); it exists so
+# the rationale the human reads is part of the call itself.
+#
+# Asking the model to "explain yourself in the same message" does not work. In
+# live gateway runs GPT-4o fires rollback_service with an empty text field, and
+# the approval card then asks a human to authorise a production rollback with
+# nothing to authorise. A required parameter it cannot omit fixes that.
+APPROVAL_REASON_PARAM = "reason"
+APPROVAL_REASON_SCHEMA = {
+    "type": "string",
+    "description": (
+        "REQUIRED. Why this action, in 1-3 sentences: the evidence, the expected "
+        "effect, and the risk if you are wrong. An on-call human reads exactly "
+        "this text and nothing else before approving or denying."
+    ),
+}
+
+
+def _with_reason(schema: dict) -> dict:
+    """Add the approval rationale parameter to a gated tool's schema."""
+    fn = schema["function"]
+    if fn["name"] not in REQUIRES_APPROVAL:
+        return schema
+    params = dict(fn["parameters"])
+    props = dict(params.get("properties", {}))
+    if APPROVAL_REASON_PARAM in props:
+        return schema
+    props[APPROVAL_REASON_PARAM] = APPROVAL_REASON_SCHEMA
+    params["properties"] = props
+    params["required"] = list(params.get("required", [])) + [APPROVAL_REASON_PARAM]
+    return {**schema, "function": {**fn, "parameters": params}}
+
+
 def build_registry(include_github: bool = False) -> tuple[dict[str, Callable], list[dict]]:
     """Return (name -> impl, openai_schemas) for the tools this run may use."""
     impls: dict[str, Callable[..., Any]] = dict(tools.TOOLS)
@@ -87,7 +185,7 @@ def build_registry(include_github: bool = False) -> tuple[dict[str, Callable], l
         impls["open_revert_pr"] = _github_impl
         schemas.append(GITHUB_TOOL_SCHEMA)
 
-    return impls, schemas
+    return impls, [_with_reason(s) for s in schemas]
 
 
 def to_anthropic(openai_schemas: list[dict]) -> list[dict]:
