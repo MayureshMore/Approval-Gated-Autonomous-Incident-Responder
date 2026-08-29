@@ -144,32 +144,103 @@ touches this one; most of it is now addressed (see B3 below).
   practice. Nothing else for B5 can proceed until the repo is public and the
   app is installed.
 
-- **B6 — Demo: NOT STARTED.** Person A's advice (in his handoff) is to record
-  this *before* chasing further polish, since `--provider sim` gives a
-  reliable, API-key-free green run right now. Worth also showing the Layer 4
-  resume beat (kill mid-approval, `--list-runs`, `--resume last`) since the
-  dashboard now specifically supports it (see B3.4).
+  **Update, same session:** repo is now public (confirmed via
+  `gh api .../--jq .private` → `false`). Mayuresh said he installed Qodo, so
+  we opened a real test PR to confirm:
+  **https://github.com/MayureshMore/Approval-Gated-Autonomous-Incident-Responder/pull/1**
+  ("Dashboard: show which provider ran the agent" — a small real feature,
+  branch `feature/dashboard-provider-badge`, not a throwaway). **After 15+
+  minutes, zero activity**: `gh api .../issues/1/comments` → 0, `.../pulls/1/reviews`
+  → 0, `gh pr checks 1` → "no checks reported", timeline shows only the
+  `committed` event. This strongly suggests the GitHub App either wasn't
+  actually selected for *this* repo during install (easy to pick the wrong
+  repo in the picker), or was installed on a different account than
+  `MayureshMore`, or the webhook isn't firing for some other reason.
+  **Second update, same session — Mayuresh confirmed the repo IS listed under
+  the Qodo installation, re-checked anyway, still zero activity.** Re-ran the
+  same checks (`gh api .../issues/1/comments` → 0, `.../pulls/1/reviews` → 0,
+  `gh pr checks 1` → "no checks reported", timeline still only shows
+  `committed`) *after* Mayuresh confirmed repo access was correct. So it's
+  **not** a repo-selection mistake — something else is broken: could be the
+  webhook delivery failing silently, the app's PR-review trigger not firing
+  on this account/plan tier, a delay far longer than the "minutes" the docs
+  promise, or an app-side issue unrelated to anything either of us configured.
+  **Decision: deprioritized per Zeel's call.** Not spending more time
+  debugging a third-party app's webhook from the outside with no visibility
+  into its logs. **What Mayuresh should check when he has a minute** (since he
+  has the admin access this needs): GitHub repo Settings → Webhooks → look for
+  a Qodo/PR-Agent webhook entry and check its "Recent Deliveries" tab for
+  failed deliveries with an error code — that's the one piece of diagnostic
+  info neither of us can see from outside. PR #1 stays open for whenever it's
+  revisited; no need to open a new one. **Everything else in this doc
+  proceeded without waiting on this.**
+
+- **B6 — Demo: script updated, not yet recorded.** Updated `DEMO_SCRIPT.md`
+  this session: added the exact copy-pasteable start command next to
+  "[start the run]", a callout that three subagents run in parallel, and a
+  full new "Bonus beat — session survival (Layer 4)" section with the
+  narration + exact commands for the kill/list-runs/resume sequence —
+  written from the real verified run above, not speculatively. Also added
+  "session survival" to the Harness/DGX talking points. Actual video/screen
+  recording still needs to happen — that's on Zeel (needs a screen + mic,
+  which I can't do from here). Person A's advice stands: record the
+  base flow first since `--provider sim` is a reliable, API-key-free green
+  run right now; the resume beat is a strong optional closer if there's time
+  in the 90s target.
 
 - **B7 — Blog: NOT STARTED.**
 
 ## Next steps (in priority order)
-1. **Message Mayuresh: make the repo public + install Qodo Merge (see B5
-   above for exact links/steps).** Both need his admin access; this is the
-   single blocking action for B5 and possibly the whole hackathon's judging
-   eligibility (open-source requirement).
-2. Once he's done that: open a small real PR, confirm Qodo comments on it,
-   fix findings, merge. That completes B5.
-3. Manually eyeball the dashboard in a browser at tablet width — the one
+1. **Record the demo (B6)** — script is ready (`DEMO_SCRIPT.md`, includes the
+   resume beat), the flow is fully verified twice over. This is the top
+   priority now that Qodo is parked.
+2. Manually eyeball the dashboard in a browser at tablet width — the one
    verification this session's tooling can't do.
-4. Try the actual Layer 4 resume demo end-to-end against the dashboard (kill
-   agent mid-approval, `--list-runs`, `--resume last`) to see `run_resumed`
-   render for real, not just synthetically.
-5. Record the demo (B6) — Person A's advice is to do this *before* chasing
-   more polish, since `--provider sim` gives a reliable green run right now;
-   include the resume beat if #4 looks good.
-6. Draft blog (B7).
+3. Draft blog (B7).
+4. **Qodo (B5), deprioritized, not forgotten:** whenever Mayuresh has a
+   minute, ask him to check GitHub repo Settings → Webhooks → the Qodo
+   webhook's "Recent Deliveries" for a failure code — that's the only
+   diagnostic neither of us can see from outside. Re-check PR #1 once
+   there's something to check.
+
+## Layer 4 resume demo — verified for real this session (not just synthetic)
+Ran the full sequence Person A documented, for real, end-to-end:
+1. Reset, started `run_agent.py --provider sim --subagents`, let it reach
+   `awaiting_approval` (real sandboxed diagnostic ran once, score 0.76).
+2. Killed the actual OS process (found via
+   `Get-CimInstance Win32_Process -Filter "Name='py.exe' or Name='python.exe'"`
+   since backgrounded jobs don't persist as shell jobs across separate tool
+   calls in this environment — matched on the full command line to avoid
+   hitting the two long-running demo servers). Confirmed the bus's `/events`
+   was completely unaffected (still 22 events, last one `awaiting_approval`)
+   — approval_server is a separate process, so killing the agent can't touch
+   it.
+3. `run_agent.py --list-runs` → `f22a7979 running step=6 provider=sim
+   pending=['rollback_service']`, exactly as documented.
+4. `run_agent.py --provider sim --resume last` → emitted `run_resumed
+   {step:6, pending:['rollback_service']}`, then a **new** `awaiting_approval`
+   for the same action with a **different `request_id`** than the pre-kill
+   one. Confirmed only one `sandbox_exec`/`run_diagnostic` total across the
+   whole kill+resume — no re-investigation, exactly as claimed.
+5. Approved using the current (post-resume) `request_id` — both resulting
+   `approval_decision` events (bus + agent) carried that same current id, the
+   rollback executed, checkout-service ended healthy. This is the live
+   version of the exact stale-decision scenario the `request_id` guard exists
+   for, and it worked correctly.
+6. Re-ran the dashboard's real `render()` against this actual 32-event
+   stream (not a synthetic one) — `run_resumed` divider renders correctly,
+   dedup correctly collapsed the duplicate `approval_decision` pair, delta
+   card/sparklines/timer all correct, zero thrown errors.
+**This demo beat is ready to record as-is.**
 
 ## Files touched this session
+- `DEMO_SCRIPT.md` (this pass) — added the exact start command, a subagents
+  callout, and the full "Bonus beat — session survival" section with the
+  verified resume-demo narration/commands; added "session survival" to the
+  Harness/DGX talking points.
+- `ui/dashboard.html` (on branch `feature/dashboard-provider-badge`, PR #1) —
+  small provider badge in the header (shows `sim`/`truefoundry`/etc. from
+  `run_started.provider`), opened as the Qodo test PR.
 - `approval_server.py` — `request_id` storage/echo fix (B3.2/B3.5).
 - `ui/dashboard.html` — `run_resumed` rendering, `request_id`-based dedup,
   `sendDecision`/button wiring for `request_id`, fetch-failure resilience fix.
