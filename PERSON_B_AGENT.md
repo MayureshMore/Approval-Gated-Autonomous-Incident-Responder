@@ -20,10 +20,15 @@ touches this one; most of it is now addressed (see B3 below).
   `EVENT_CONTRACT.md` addendum. `ui/dashboard.html` stays on Zeel's version
   (superset of remote — remote hasn't touched it). `.gitignore` = Person A's
   version + one added `*.log` line.
-- **Nothing has been `git add`ed or committed.** Zeel handles
-  add/commit/push. Re-run the sync-from-origin steps in this session's
-  transcript if Person A pushes again before Zeel commits — check
-  `git fetch origin && git log origin/master` for new commits first.
+- **Committed and pushed as of this session.** Commit `fd656a1` ("Dashboard:
+  render subagent/sandbox/resume events, fix approval request_id round-trip")
+  is on `origin/master`, confirmed via `git fetch` + rev-parse equality after
+  Zeel's push. Working tree is fully clean — nothing pending.
+  Before starting new work in a future session: `git fetch origin && git log
+  origin/master -5` to check whether Person A has pushed again, and re-sync
+  (see this session's transcript for the `--mixed` reset + per-file
+  `git show origin/master:<path> > <path>` pattern) before making further
+  changes.
 
 ## Environment notes (session-specific — may not apply elsewhere)
 - Windows machine. `python` alias is NOT on PATH (opens MS Store); use `py`.
@@ -112,9 +117,32 @@ touches this one; most of it is now addressed (see B3 below).
 - **B4 — Environment: no changes.** `mock_env/main.py` untouched; still
   matches TOOL_CONTRACT.md exactly (confirmed via live runs).
 
-- **B5 — Qodo: still blocked on Zeel's first commit/push.** This is Person
-  A's explicitly flagged "cheapest track, not started" — highest priority
-  once the repo state above is committed and pushed.
+- **B5 — Qodo: blocked on Mayuresh — two things needed from him.**
+  1. **Install the Qodo Merge GitHub App on the repo.** This requires repo
+     *admin* permission — Zeel's GitHub token (`zeelpatel2`) has `push` but
+     `admin: false` on `MayureshMore/Approval-Gated-Autonomous-Incident-Responder`
+     (confirmed via `gh api repos/.../--jq .permissions`), so **only Mayuresh
+     can do this**, or he needs to grant Zeel admin/maintainer first.
+     - Real install links (verified via web search, not guessed):
+       - Free, for open-source repos: https://github.com/marketplace/qodo-merge-pro-for-open-source
+       - Paid tier: https://github.com/marketplace/qodo-merge-pro
+     - Install flow: open the link → "Install" → pick the org/account
+       (Mayuresh's) → choose "Only select repositories" → pick this repo →
+       confirm permissions. Reviews start appearing on new PRs within minutes,
+       no CI/CD config or API key needed for the managed App path.
+  2. **Make the repo public first.** Checked via
+     `gh api repos/.../--jq .private` → currently **`true` (private)**. Two
+     reasons this needs fixing, not just for Qodo: (a) the free
+     "for-open-source" Qodo tier requires a public repo, and (b)
+     `CLAUDE.md` states outright **"Repo MUST stay open source"** as a
+     hackathon rule — a private repo may not satisfy the judging criteria at
+     all, independent of Qodo. Flag this to Mayuresh alongside the Qodo ask;
+     making it public also needs repo admin, so it's the same conversation.
+  Once both are done: open a small real PR (even a trivial one) to confirm
+  Qodo actually comments on it, fix whatever it flags, then merge — that's
+  what B5's "run every PR through it, fix findings before merge" means in
+  practice. Nothing else for B5 can proceed until the repo is public and the
+  app is installed.
 
 - **B6 — Demo: NOT STARTED.** Person A's advice (in his handoff) is to record
   this *before* chasing further polish, since `--provider sim` gives a
@@ -125,15 +153,20 @@ touches this one; most of it is now addressed (see B3 below).
 - **B7 — Blog: NOT STARTED.**
 
 ## Next steps (in priority order)
-1. Zeel: `git add`/`commit`/`push` — nothing staged yet, all synced content
-   sitting in the working tree.
-2. Manually eyeball the dashboard in a browser at tablet width — the one
+1. **Message Mayuresh: make the repo public + install Qodo Merge (see B5
+   above for exact links/steps).** Both need his admin access; this is the
+   single blocking action for B5 and possibly the whole hackathon's judging
+   eligibility (open-source requirement).
+2. Once he's done that: open a small real PR, confirm Qodo comments on it,
+   fix findings, merge. That completes B5.
+3. Manually eyeball the dashboard in a browser at tablet width — the one
    verification this session's tooling can't do.
-3. Try the actual Layer 4 resume demo end-to-end against the dashboard (kill
+4. Try the actual Layer 4 resume demo end-to-end against the dashboard (kill
    agent mid-approval, `--list-runs`, `--resume last`) to see `run_resumed`
    render for real, not just synthetically.
-4. Wire Qodo (B5) once pushed.
-5. Record the demo (B6) — including the resume beat if #3 looks good.
+5. Record the demo (B6) — Person A's advice is to do this *before* chasing
+   more polish, since `--provider sim` gives a reliable green run right now;
+   include the resume beat if #4 looks good.
 6. Draft blog (B7).
 
 ## Files touched this session
