@@ -69,6 +69,44 @@ class EventBus:
                 pass
         return ev
 
+    def replay(self, history: list[dict]) -> int:
+        """
+        Re-seed a fresh bus with a resumed run's earlier events.
+
+        Ctrl-C on the demo launcher kills the approval server too, so a resumed
+        run usually meets a bus with empty memory — and the dashboard would show
+        a timeline starting at `run_resumed`, losing exactly the continuity that
+        session survival is meant to demonstrate.
+
+        Idempotent: if the bus already carries events for this run (the operator
+        killed only the agent), nothing is pushed.
+        """
+        if not history:
+            return 0
+
+        with self._lock:
+            self.events = list(history)
+            self._write_mirror()
+
+        if not self.bus_url:
+            return 0
+        try:
+            import requests
+            existing = requests.get(f"{self.bus_url}/events", timeout=5).json()
+        except Exception as exc:
+            print(f"[bus] could not read history ({type(exc).__name__}) — skipping replay")
+            return 0
+
+        if any(e.get("run_id") == self.run_id for e in existing):
+            return 0   # the bus survived; its log is already the source of truth
+
+        pushed = 0
+        for ev in history:
+            self._push(ev)
+            pushed += 1
+        print(f"[bus] replayed {pushed} events so the timeline stays continuous")
+        return pushed
+
     # -- transports ---------------------------------------------------------
     def _write_mirror(self) -> None:
         try:

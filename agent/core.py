@@ -107,6 +107,10 @@ class IncidentAgent:
                          for c in state.get("pending_calls", [])]
         self.provider.restore(state.get("provider_state", {}))
 
+        # Put the earlier events back on the bus before announcing the resume,
+        # so the dashboard shows one continuous run rather than a stub.
+        self.bus.replay(state.get("events", []))
+
         self.bus.emit("run_resumed", scenario=self._scenario, step=self.report.steps,
                       pending=[c.name for c in self._pending])
         return self._drive()

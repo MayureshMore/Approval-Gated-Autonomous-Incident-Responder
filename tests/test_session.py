@@ -196,3 +196,72 @@ def test_openai_style_providers_snapshot_their_conversation(provider_cls, attr, 
     q = cls()
     q.restore(snap)
     assert getattr(q, attr) == getattr(p, attr)
+
+
+# --- bus replay (Qodo #5) --------------------------------------------------
+class FakeBusServer:
+    """Stands in for approval_server over HTTP, recording what gets pushed."""
+
+    def __init__(self, existing=None):
+        self.existing = existing or []
+        self.pushed: list[dict] = []
+
+
+@pytest.fixture
+def wired_bus(monkeypatch):
+    from agent.bus import EventBus
+    server = FakeBusServer()
+    bus = EventBus(bus_url="http://bus.test", events_path="/dev/null", run_id="R1", echo=False)
+
+    class Resp:
+        def __init__(self, payload): self._p = payload
+        def json(self): return self._p
+
+    import requests
+    monkeypatch.setattr(requests, "get", lambda *a, **k: Resp(server.existing))
+    monkeypatch.setattr(requests, "post", lambda url, json=None, timeout=None:
+                        server.pushed.append(json) or Resp({"ok": True}))
+    monkeypatch.setattr(bus, "_write_mirror", lambda: None)
+    return bus, server
+
+
+def test_replay_reseeds_a_bus_that_lost_its_memory(wired_bus):
+    """Ctrl-C kills the approval server too, so a resumed run meets an empty bus."""
+    bus, server = wired_bus
+    history = [{"kind": "run_started", "run_id": "R1"}, {"kind": "tool_call", "run_id": "R1"}]
+    assert bus.replay(history) == 2
+    assert [e["kind"] for e in server.pushed] == ["run_started", "tool_call"]
+    assert bus.events == history
+
+
+def test_replay_is_idempotent_when_the_bus_survived(wired_bus):
+    """Killing only the agent leaves the bus intact — re-pushing would duplicate."""
+    bus, server = wired_bus
+    server.existing = [{"kind": "run_started", "run_id": "R1"}]
+    assert bus.replay([{"kind": "run_started", "run_id": "R1"}]) == 0
+    assert server.pushed == []
+
+
+def test_replay_ignores_another_runs_events_on_the_bus(wired_bus):
+    bus, server = wired_bus
+    server.existing = [{"kind": "run_started", "run_id": "SOMEONE-ELSE"}]
+    assert bus.replay([{"kind": "run_started", "run_id": "R1"}]) == 1
+
+
+def test_replay_of_nothing_is_a_no_op(wired_bus):
+    bus, server = wired_bus
+    assert bus.replay([]) == 0 and server.pushed == []
+
+
+def test_resume_replays_history_before_announcing_itself(env, bus, store):
+    """The dashboard must never see run_resumed as the first event of a run."""
+    died = _agent(bus, store, DyingGate(bus, True)).run()
+    state = store.load(died.run_id)
+
+    fresh = type(bus)()
+    fresh.run_id = state["run_id"]
+    _agent(fresh, store, ScriptedGate(fresh, True)).resume(state)
+
+    kinds = fresh.kinds()
+    assert kinds[0] == "run_started", f"timeline starts at {kinds[0]!r}, not the original run"
+    assert kinds.index("run_started") < kinds.index("run_resumed")

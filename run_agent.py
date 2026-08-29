@@ -85,8 +85,10 @@ def preflight(require_env: bool = True) -> list[str]:
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Ripcord incident responder")
-    p.add_argument("--provider", default=os.environ.get("PROVIDER", "sim"),
-                   choices=["truefoundry", "sim", "openai", "anthropic"])
+    p.add_argument("--provider", default=None,
+                   choices=["truefoundry", "sim", "openai", "anthropic"],
+                   help="default: the checkpoint's provider when resuming, else "
+                        "$PROVIDER, else sim")
     p.add_argument("--subagents", action="store_true",
                    help="fan out parallel read-only investigators first")
     p.add_argument("--github", action="store_true",
@@ -130,6 +132,34 @@ def main() -> int:
             print(json.dumps(tfy_preflight(), indent=2))
             return 1
 
+    # Resolve the checkpoint first: a resumed run's provider comes from the
+    # checkpoint unless the operator explicitly overrides it. Restoring an
+    # OpenAI conversation into the sim provider would silently continue from
+    # sim's own turn state and diverge from the run being resumed.
+    state = None
+    if args.resume:
+        run_id = store.latest() if args.resume == "last" else args.resume
+        if not run_id or not store.exists(run_id):
+            print(f"nothing to resume ({args.resume!r}). Try --list-runs.")
+            return 1
+        state = store.load(run_id)
+        if state.get("status") != RUNNING:
+            print(f"run {run_id} already finished with status={state.get('status')!r}")
+            return 1
+        saved = state.get("provider")
+        if args.provider and saved and args.provider != saved:
+            print(f"refusing to resume: run {run_id} was recorded with provider "
+                  f"{saved!r}, but --provider {args.provider!r} was given. Its saved "
+                  f"conversation is not portable between providers.")
+            return 1
+        if not args.provider:
+            args.provider = saved
+        print(f"Resuming {run_id} from step {state.get('step')} on {args.provider} "
+              f"(pending: {[c['name'] for c in state.get('pending_calls', [])] or 'none'})")
+
+    if not args.provider:
+        args.provider = os.environ.get("PROVIDER", "sim")
+
     problems = preflight(require_env=True)
     if args.provider == "truefoundry":
         from agent.providers.truefoundry import preflight as tfy_preflight
@@ -155,19 +185,6 @@ def main() -> int:
         for pr in problems:
             print("  -", pr)
         return 1
-
-    state = None
-    if args.resume:
-        run_id = store.latest() if args.resume == "last" else args.resume
-        if not run_id or not store.exists(run_id):
-            print(f"nothing to resume ({args.resume!r}). Try --list-runs.")
-            return 1
-        state = store.load(run_id)
-        if state.get("status") != RUNNING:
-            print(f"run {run_id} already finished with status={state.get('status')!r}")
-            return 1
-        print(f"Resuming {run_id} from step {state.get('step')} "
-              f"(pending: {[c['name'] for c in state.get('pending_calls', [])] or 'none'})")
 
     # A resumed run keeps its run_id, so the dashboard timeline is continuous.
     bus = EventBus(run_id=state["run_id"] if state else None)
