@@ -21,6 +21,9 @@
   .badge.crit{background:rgba(248,81,73,.15);color:var(--crit)}
   .badge.ok{background:rgba(63,185,80,.15);color:var(--ok)}
   .badge.run{background:rgba(68,147,248,.15);color:var(--accent)}
+  .badge.provider{background:var(--panel2);color:var(--muted);text-transform:uppercase;
+    letter-spacing:.04em;font-size:11px}
+  .badge.provider.sim{color:var(--warn)}
   .timer{color:var(--muted);font-variant-numeric:tabular-nums;font-size:13px}
   .wrap{display:grid;grid-template-columns:1fr 360px;gap:20px;padding:20px 24px;max-width:1200px;margin:0 auto}
   @media(max-width:900px){.wrap{grid-template-columns:1fr}}
@@ -91,6 +94,7 @@
 <header>
   <h1>🛰️ Incident Responder</h1>
   <span class="sub" id="scenario">waiting for run…</span>
+  <span class="badge provider" id="provider-badge" style="display:none"></span>
   <span style="flex:1"></span>
   <span class="timer" id="timer"><span class="dotpulse"></span><span id="timer-text">—</span></span>
   <span class="badge run" id="status">IDLE</span>
@@ -259,7 +263,10 @@ function render(events){
   for(const e of events){
     if(e.kind==="run_started"){document.getElementById("scenario").textContent=e.scenario||"incident";
       statusEl.textContent="INVESTIGATING";statusEl.className="badge run";
-      if(runStartT==null)runStartT=e.t;}
+      if(runStartT==null)runStartT=e.t;
+      const pb=document.getElementById("provider-badge");
+      if(e.provider){pb.textContent=e.provider;pb.className="badge provider"+(e.provider==="sim"?" sim":"");pb.style.display="";}
+      else{pb.style.display="none";}}
     if(e.kind==="tool_result"&&e.result&&e.result.service&&e.result.status){lastMetrics=e.result;metricsHistory.push(e.result);}
     else if(e.kind==="tool_result"&&e.result&&e.result.p99_latency_ms!==undefined){lastMetrics=e.result;metricsHistory.push(e.result);}
     if(e.kind==="sandbox_exec"||(e.kind==="tool_call"&&/diagnos|correlate|sandbox/i.test(JSON.stringify(e))))sawSandbox=true;
