@@ -14,8 +14,11 @@ ui/events.json
 # Scratch from the revert flow, if it ever escapes its temp dir
 _revert_repo/
 
+# Session checkpoints (Layer 4) — per-machine run state
+runs/
+
 # OS
 .DS_Store
 
-# Session checkpoints (Layer 4) — per-machine run state
-runs/
+# Local server logs from manual runs
+*.log
