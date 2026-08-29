@@ -4,7 +4,7 @@
 > session runs out of context or usage you can open a fresh one, paste
 > *"Read PERSON_A_AGENT.md and continue"*, and lose nothing.
 >
-> **Status: 113 tests passing. A2 IS LIVE — a full incident response ran on
+> **Status: 136 tests passing. A2 IS LIVE — a full incident response ran on
 > GPT-4o through the TrueFoundry gateway, end to end, and recovered the service.**
 > Layers 0, 1 and 4 plus subagents also demo with no API key at all. Layer 2 (real
 > GitHub PR) is built and tested, not yet fired live.
@@ -206,7 +206,7 @@ mid-demo to show there is nothing up our sleeve.
 
 ## If you are resuming cold
 1. `.venv/bin/python run_agent.py --selftest` → expect `PASS` (mock env must be up).
-2. `.venv/bin/python -m pytest` → expect **113 passed**.
+2. `.venv/bin/python -m pytest` → expect **136 passed**.
 3. Do a full dashboard run (commands at the top). If that is green, the demo is safe.
 4. Then: A2 live (needs gateway onboarding) or A6 live (needs `gh` + a repo).
 
