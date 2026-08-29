@@ -1,0 +1,9 @@
+# Git for Windows ships with core.autocrlf=true, which rewrites checked-out
+# files to CRLF. Bash cannot parse a script with CR line endings — it fails with
+# `syntax error near unexpected token $'do\r'` — so without this, scripts/demo.sh
+# is silently broken in every Windows or WSL clone while looking fine in the repo.
+# macOS and Linux are unaffected either way; this just makes the guarantee explicit.
+*.sh text eol=lf
+
+# make is likewise unforgiving about stray CRs in recipe lines.
+Makefile text eol=lf
