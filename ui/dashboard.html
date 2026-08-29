@@ -76,6 +76,65 @@
   .metric .v{font-variant-numeric:tabular-nums;font-weight:600}
   .v.bad{color:var(--crit)} .v.good{color:var(--ok)}
   .empty{padding:24px 16px;color:var(--muted);text-align:center}
+
+  /* --- timeline is a scroll container -------------------------------------
+     It had no height rule at all, so `tl.scrollTop = tl.scrollHeight` was dead
+     code and the card grew without limit — on a full run the approval card
+     was pushed off-screen exactly when the operator needed to click it. */
+  #timeline{max-height:58vh;overflow-y:auto;overscroll-behavior:contain}
+  #timeline::-webkit-scrollbar{width:10px}
+  #timeline::-webkit-scrollbar-thumb{background:var(--border);border-radius:6px}
+  .step{scroll-margin-top:8px}
+  .step.highlight{background:rgba(68,147,248,.12)}
+
+  /* --- filter chips --- */
+  .filters{display:flex;gap:6px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--border)}
+  .chip{background:var(--panel2);color:var(--muted);border:1px solid var(--border);border-radius:999px;
+    padding:4px 11px;font-size:12px;cursor:pointer;user-select:none;display:flex;align-items:center;gap:5px;
+    min-height:30px}
+  .chip:hover{color:var(--text);border-color:var(--accent)}
+  .chip[aria-pressed="true"]{background:rgba(68,147,248,.15);color:var(--accent);border-color:var(--accent)}
+  .chip .k{opacity:.55;font-size:10px;border:1px solid currentColor;border-radius:3px;padding:0 3px}
+  .chip .n{opacity:.6;font-variant-numeric:tabular-nums}
+  /* Filtering is pure CSS keyed off one attribute, so toggling a chip never
+     re-renders the timeline and never disturbs scroll position or selection. */
+  #timeline[data-filter="agent"]    .step:not([data-group="agent"]),
+  #timeline[data-filter="tool"]     .step:not([data-group="tool"]),
+  #timeline[data-filter="sandbox"]  .step:not([data-group="sandbox"]),
+  #timeline[data-filter="approval"] .step:not([data-group="approval"]),
+  #timeline[data-filter="subagent"] .step:not([data-group="subagent"]){display:none}
+
+  /* --- jump to latest --- */
+  .tl-wrap{position:relative}
+  #jump{position:absolute;right:16px;bottom:12px;display:none;gap:6px;align-items:center;
+    background:var(--accent);color:#04131f;border:none;border-radius:999px;padding:7px 13px;
+    font-size:12px;font-weight:600;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.45);
+    min-height:0;flex:0 0 auto;width:auto}
+  #jump.show{display:flex}
+
+  /* --- expandable detail --- */
+  details.more{margin-top:5px}
+  details.more>summary{cursor:pointer;color:var(--accent);font-size:12px;list-style:none;
+    display:inline-block;padding:2px 0}
+  details.more>summary::-webkit-details-marker{display:none}
+  details.more>summary::before{content:"▸ ";display:inline-block;transition:transform .12s}
+  details.more[open]>summary::before{content:"▾ "}
+  details.more pre{margin:5px 0 0;background:var(--panel2);border:1px solid var(--border);
+    border-radius:8px;padding:8px 10px;white-space:pre-wrap;overflow-wrap:anywhere;
+    font-size:12px;font-family:ui-monospace,Consolas,monospace;max-height:280px;overflow:auto}
+
+  /* --- keyboard hints on the approval buttons --- */
+  button .k{display:inline-block;margin-left:7px;font-size:11px;opacity:.65;
+    border:1px solid currentColor;border-radius:3px;padding:0 4px;font-weight:600}
+  @media(max-width:900px){button .k{display:none}}
+
+  /* --- connection banner --- */
+  #offline{display:none;background:rgba(248,81,73,.15);color:var(--crit);border:1px solid var(--crit);
+    border-radius:8px;padding:9px 13px;font-size:13px;margin-bottom:14px}
+  #offline.show{display:block}
+
+  /* --- the approval card follows you down the page --- */
+  #approval{position:sticky;top:10px;z-index:20}
   .resolved{padding:16px;color:var(--ok);font-weight:600;display:none}
   .resolved.show{display:block}
   /* before/after deltas */
@@ -106,21 +165,33 @@
 
 <div class="wrap">
   <div style="display:flex;flex-direction:column;gap:20px">
+    <div id="offline">⚠ Lost contact with the approval bus — showing the last state received.</div>
     <div class="card" id="approval">
       <h2>⏸ Waiting for your approval</h2>
       <div class="approval-body">
         <div class="action-line" id="ap-action"></div>
         <div class="reason" id="ap-reason"></div>
         <div class="btns">
-          <button class="approve" id="btn-approve">Approve</button>
-          <button class="reject" id="btn-reject">Reject</button>
+          <button class="approve" id="btn-approve">Approve<span class="k">A</span></button>
+          <button class="reject" id="btn-reject">Reject<span class="k">R</span></button>
         </div>
       </div>
     </div>
 
     <div class="card">
       <h2>Agent activity</h2>
-      <div id="timeline"><div class="empty">No activity yet. Start the agent.</div></div>
+      <div class="filters" id="filters">
+        <button class="chip" data-filter="all"      aria-pressed="true">All <span class="n" id="n-all">0</span><span class="k">1</span></button>
+        <button class="chip" data-filter="agent"    aria-pressed="false">💬 Agent <span class="n" id="n-agent">0</span><span class="k">2</span></button>
+        <button class="chip" data-filter="tool"     aria-pressed="false">🔧 Tools <span class="n" id="n-tool">0</span><span class="k">3</span></button>
+        <button class="chip" data-filter="sandbox"  aria-pressed="false">🧪 Sandbox <span class="n" id="n-sandbox">0</span><span class="k">4</span></button>
+        <button class="chip" data-filter="approval" aria-pressed="false">⏸ Approvals <span class="n" id="n-approval">0</span><span class="k">5</span></button>
+        <button class="chip" data-filter="subagent" aria-pressed="false">⇉ Subagents <span class="n" id="n-subagent">0</span><span class="k">6</span></button>
+      </div>
+      <div class="tl-wrap">
+        <div id="timeline" data-filter="all"><div class="empty">No activity yet. Start the agent.</div></div>
+        <button id="jump">↓ <span id="jump-n"></span> new</button>
+      </div>
       <div class="resolved" id="resolved"></div>
     </div>
   </div>
@@ -167,6 +238,17 @@ const ICON = {run_started:"▶",tool_call:"🔧",tool_result:"✓",awaiting_appr
 let optimistic = new Set();
 let lastRunKey = null;
 let runStartT = null, runEndT = null;
+
+// Which filter chip an event belongs to. Kept beside ICON so a new event kind
+// cannot be rendered without also being classified.
+const GROUP = {run_started:"agent",run_finished:"agent",run_resumed:"agent",agent_message:"agent",
+  tool_call:"tool",tool_result:"tool",sandbox_exec:"sandbox",
+  awaiting_approval:"approval",approval_decision:"approval",
+  subagent_started:"subagent",subagent_finished:"subagent",error:"agent"};
+
+let lastSignature = null;   // skip the DOM write when nothing changed
+let unseenBelow = 0;        // rows added while the operator was scrolled up
+let pendingKey = null;      // the gate the keyboard shortcuts act on
 
 function fmtElapsed(sec){
   const m=Math.floor(sec/60), s=Math.floor(sec%60);
@@ -264,7 +346,14 @@ function render(events){
   if(runKey!==lastRunKey){ lastRunKey=runKey; optimistic.clear(); }
 
   const rows=[];
+  const counts={all:0,agent:0,tool:0,sandbox:0,approval:0,subagent:0};
+  // <details> state lives in the DOM, and a full innerHTML rewrite would slam
+  // every expanded block shut mid-run. Carry the open ones across.
+  const openDetails=new Set(Array.from(
+    document.querySelectorAll("#timeline details.more[open]")).map(d=>d.dataset.i));
+  let evIdx=-1;
   for(const e of events){
+    evIdx++;
     if(e.kind==="run_started"){document.getElementById("scenario").textContent=e.scenario||"incident";
       statusEl.textContent="INVESTIGATING";statusEl.className="badge run";
       if(runStartT==null)runStartT=e.t;
@@ -293,7 +382,13 @@ function render(events){
 
     let text="";
     if(e.kind==="tool_call")text=`<span class="title">${escapeHtml(e.tool)}</span><div class="meta"><code>${escapeHtml(fmtArgs(e.args))}</code></div>`;
-    else if(e.kind==="tool_result")text=`<span class="title">result</span><div class="meta">${escapeHtml(JSON.stringify(e.result)).slice(0,180)}</div>`;
+    else if(e.kind==="tool_result"){
+      // Truncate BEFORE escaping: slicing escaped text can cut an entity in
+      // half ("&am") and render as literal garbage.
+      const full=JSON.stringify(e.result,null,1)||"";
+      text=`<span class="title">result</span><div class="meta">${escapeHtml(clip(full,180))}</div>`
+           + more(full,180,evIdx,openDetails);
+    }
     else if(e.kind==="awaiting_approval")text=`<span class="title">Proposed: ${escapeHtml(e.action)}</span><div class="meta">${escapeHtml(fmtArgs(e.args))}</div>`;
     else if(e.kind==="approval_decision")text=`<span class="title">${e.approved?"Approved":"Rejected"} ${escapeHtml(e.action)}</span><div class="meta">by ${escapeHtml(e.by)}</div>`;
     else if(e.kind==="agent_message")text=`<span class="title">Agent</span><div class="meta">${escapeHtml(e.text||"")}</div>`;
@@ -302,7 +397,10 @@ function render(events){
     else if(e.kind==="subagent_started")text=`<span class="title">Subagent: ${escapeHtml(e.subagent)}</span><div class="meta">${escapeHtml(e.task||"")}</div>`;
     else if(e.kind==="subagent_finished"){
       const verdict=(e.findings&&e.findings.verdict)||"";
-      text=`<span class="title">Subagent done: ${escapeHtml(e.subagent)}</span><div class="meta">${escapeHtml(verdict||JSON.stringify(e.findings||{}).slice(0,160))}</div>`;
+      const full=JSON.stringify(e.findings||{},null,1);
+      text=`<span class="title">Subagent done: ${escapeHtml(e.subagent)}</span>`
+         + `<div class="meta">${escapeHtml(verdict||clip(full,160))}</div>`
+         + more(full,verdict?0:160,evIdx,openDetails);
     }
     else if(e.kind==="sandbox_exec")text=`<span class="title">Executed in sandbox</span>
       <div class="sandbox-box"><div class="label">diagnostic code</div><pre>${escapeHtml(e.code||"")}</pre></div>`;
@@ -310,10 +408,33 @@ function render(events){
     else if(e.kind==="run_resumed")text=`<span class="title">Run resumed at step ${escapeHtml(e.step!=null?e.step:"?")}</span><div class="meta">${(e.pending||[]).length?escapeHtml("still pending: "+e.pending.join(", ")):""}</div>`;
     else continue;
     const cls=e.kind==="error"?"step error":e.kind==="run_resumed"?"step resumed":"step";
-    rows.push(`<div class="${cls}"><div class="dot">${ICON[e.kind]||"•"}</div><div class="body">${text}</div></div>`);
+    counts[GROUP[e.kind]||"agent"]=(counts[GROUP[e.kind]||"agent"]||0)+1;
+    rows.push(`<div class="${cls}" data-group="${escapeHtml(GROUP[e.kind]||"agent")}" data-i="${evIdx}">`
+      + `<div class="dot">${ICON[e.kind]||"•"}</div><div class="body">${text}</div></div>`);
   }
-  tl.innerHTML=rows.length?rows.join(""):`<div class="empty">No activity yet. Start the agent.</div>`;
-  tl.scrollTop=tl.scrollHeight;
+  counts.all=rows.length;
+  for(const g of ["all","agent","tool","sandbox","approval","subagent"]){
+    const el=document.getElementById("n-"+g); if(el)el.textContent=counts[g]||0;
+  }
+
+  // Re-writing the timeline on every 1.2s poll destroyed text selection and
+  // yanked the scroll position back down. Write only when the content actually
+  // differs, so an idle dashboard is completely stable to read from.
+  const signature=rows.length+"|"+rows.join("");
+  if(signature!==lastSignature){
+    const nearBottom = tl.scrollHeight - tl.scrollTop - tl.clientHeight < 60;
+    const prevTop = tl.scrollTop, prevRows = (lastSignature||"").split("|")[0]|0;
+    lastSignature=signature;
+    tl.innerHTML=rows.length?rows.join(""):`<div class="empty">No activity yet. Start the agent.</div>`;
+    if(nearBottom){
+      tl.scrollTop=tl.scrollHeight; unseenBelow=0;
+    }else{
+      // Hold the operator's place and tell them what they are missing.
+      tl.scrollTop=prevTop;
+      unseenBelow += Math.max(0, rows.length-prevRows);
+    }
+    updateJump();
+  }
 
   updateMetrics(lastMetrics);
   updateDeltaCard(metricsHistory);
@@ -330,10 +451,12 @@ function render(events){
     document.getElementById("ap-reason").textContent=pending.reason||"";
     statusEl.textContent="AWAITING APPROVAL";statusEl.className="badge crit";
     const key=pending.request_id||pending.action;
-    document.getElementById("btn-approve").onclick=()=>{optimistic.add(key);sendDecision(pending.action,true,pending.request_id);ap.classList.add("hidden");};
-    document.getElementById("btn-reject").onclick=()=>{optimistic.add(key);sendDecision(pending.action,false,pending.request_id);ap.classList.add("hidden");};
+    pendingKey={key,action:pending.action,request_id:pending.request_id};
+    document.getElementById("btn-approve").onclick=()=>decide(true);
+    document.getElementById("btn-reject").onclick=()=>decide(false);
   }else{
     ap.classList.add("hidden");
+    pendingKey=null;
   }
 
   if(finished&&lastMetrics&&lastMetrics.status==="healthy"){
@@ -347,9 +470,83 @@ function render(events){
 function escapeHtml(s){return String(s==null?"":s).replace(/[&<>"']/g,
   c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 
+function clip(s,n){s=String(s==null?"":s);return s.length>n?s.slice(0,n)+"…":s;}
+
+// A "show full" disclosure, but only when there is genuinely more to show.
+// `limit` of 0 means: always offer it (the caller already showed a summary).
+function more(full,limit,i,openSet){
+  if(!full||(limit&&full.length<=limit))return "";
+  const open=openSet.has(String(i))?" open":"";
+  return `<details class="more" data-i="${i}"${open}><summary>show full</summary>`
+       + `<pre>${escapeHtml(full)}</pre></details>`;
+}
+
+// --- approving / rejecting -------------------------------------------------
+function decide(approved){
+  if(!pendingKey)return;
+  const {key,action,request_id}=pendingKey;
+  optimistic.add(key);
+  sendDecision(action,approved,request_id);
+  document.getElementById("approval").classList.add("hidden");
+  pendingKey=null;
+}
+
+// --- jump to latest --------------------------------------------------------
+function updateJump(){
+  const tl=document.getElementById("timeline"), j=document.getElementById("jump");
+  const nearBottom = tl.scrollHeight - tl.scrollTop - tl.clientHeight < 60;
+  if(nearBottom)unseenBelow=0;
+  document.getElementById("jump-n").textContent=unseenBelow||"";
+  j.classList.toggle("show", unseenBelow>0 && !nearBottom);
+}
+
+// --- filters ---------------------------------------------------------------
+function setFilter(name){
+  document.getElementById("timeline").dataset.filter=name;
+  for(const c of document.querySelectorAll(".chip"))
+    c.setAttribute("aria-pressed", String(c.dataset.filter===name));
+}
+
+function wireUp(){
+  const tl=document.getElementById("timeline");
+  tl.addEventListener("scroll",updateJump,{passive:true});
+  document.getElementById("jump").addEventListener("click",()=>{
+    tl.scrollTop=tl.scrollHeight; unseenBelow=0; updateJump();
+  });
+  for(const c of document.querySelectorAll(".chip"))
+    c.addEventListener("click",()=>setFilter(c.dataset.filter));
+
+  const BY_KEY={"1":"all","2":"agent","3":"tool","4":"sandbox","5":"approval","6":"subagent"};
+  document.addEventListener("keydown",ev=>{
+    // Never hijack a key the operator meant for a field or a browser shortcut.
+    const t=ev.target;
+    if(ev.metaKey||ev.ctrlKey||ev.altKey)return;
+    if(t&&(t.tagName==="INPUT"||t.tagName==="TEXTAREA"||t.isContentEditable))return;
+    const k=ev.key.toLowerCase();
+    if(BY_KEY[k]){setFilter(BY_KEY[k]);ev.preventDefault();return;}
+    if(k==="escape"){setFilter("all");return;}
+    if(k==="j"){tl.scrollTop=tl.scrollHeight;unseenBelow=0;updateJump();return;}
+    // Approve/reject only while a gate is actually open, so a stray keypress
+    // between runs can never authorise anything.
+    if(!pendingKey)return;
+    if(k==="a"){decide(true);ev.preventDefault();}
+    if(k==="r"){decide(false);ev.preventDefault();}
+  });
+}
+wireUp();
+
+let missedPolls=0;
 async function loop(){
   const events=await fetchEvents();
-  if(events!==null)render(events);   // null = fetch failed this cycle; keep prior state on screen
+  if(events!==null){
+    missedPolls=0;
+    render(events);
+  }else{
+    // null = fetch failed this cycle; keep prior state on screen. Say so after
+    // a couple of misses rather than silently showing stale data.
+    missedPolls++;
+  }
+  document.getElementById("offline").classList.toggle("show", missedPolls>=2);
   setTimeout(loop,1200);
 }
 loop();
