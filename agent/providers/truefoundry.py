@@ -88,6 +88,19 @@ def preflight() -> dict:
         return status
     status["models_available"] = len(models)
     status["sample_models"] = models[:10]
+
+    if not models:
+        # The key authenticates but no provider account is attached yet. This is
+        # a dashboard step, not a code problem — say so, because the raw symptom
+        # (empty list, then a 403 on every model) reads like a bug.
+        status["error"] = (
+            "the gateway accepted the key but exposes NO models to this account. "
+            "Add a provider account (e.g. OpenAI) at "
+            f"{base_url().split('/api/')[0]}/gateway-onboarding, then re-run "
+            "--list-models. Until then every completion returns 403 "
+            "'not authorized to access model ... or model does not exist'.")
+        return status
+
     if status["model"] not in models:
         status["error"] = (f"model {status['model']!r} is not exposed by this gateway; "
                            f"pick one of: {models[:5]}")

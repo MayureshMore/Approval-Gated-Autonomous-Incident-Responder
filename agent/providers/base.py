@@ -40,3 +40,17 @@ class Provider(Protocol):
 
     def record_tool_result(self, call: ToolCall, result: Any) -> None:
         """Feed a tool's output back into the conversation."""
+
+
+class Resumable(Protocol):
+    """Providers implement this so a run can survive losing its process.
+
+    The snapshot is the conversation, not the connection: on resume we build a
+    fresh client and pour the old messages back in.
+    """
+
+    def snapshot(self) -> dict:
+        """Serialisable conversation state."""
+
+    def restore(self, state: dict) -> None:
+        """Reinstate conversation state from a snapshot."""

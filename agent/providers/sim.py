@@ -45,6 +45,17 @@ class SimProvider:
                 and isinstance(result, dict) and result.get("rejected"):
             self._rejected = True
 
+    # -- session persistence (Layer 4) --------------------------------------
+    def snapshot(self) -> dict:
+        return {"turn": self.turn, "seen": self.seen,
+                "service": self.service, "rejected": self._rejected}
+
+    def restore(self, state: dict) -> None:
+        self.turn = state.get("turn", 0)
+        self.seen = state.get("seen", {})
+        self.service = state.get("service", self.service)
+        self._rejected = state.get("rejected", False)
+
     # -- the script ---------------------------------------------------------
     def step(self, schemas: list[dict]) -> AssistantTurn:  # noqa: ARG002
         self.turn += 1

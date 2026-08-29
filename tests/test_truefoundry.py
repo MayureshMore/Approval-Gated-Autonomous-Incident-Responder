@@ -175,6 +175,15 @@ def test_preflight_rejects_a_model_the_gateway_does_not_expose(configured, monke
     assert out["ready"] is False and "not exposed" in out["error"]
 
 
+def test_preflight_explains_an_empty_model_list(configured, monkeypatch):
+    """The key authenticates but no provider account is attached — a dashboard
+    step, not a bug. The raw symptom is misleading, so the message must not be."""
+    monkeypatch.setattr(tfy, "list_models", lambda: [])
+    out = tfy.preflight()
+    assert out["ready"] is False
+    assert "NO models" in out["error"] and "gateway-onboarding" in out["error"]
+
+
 def test_preflight_passes_when_the_model_is_there(configured, monkeypatch):
     monkeypatch.setenv("TRUEFOUNDRY_MODEL", "openai-main/gpt-4o")
     monkeypatch.setattr(tfy, "list_models", lambda: ["openai-main/gpt-4o", "x/y"])

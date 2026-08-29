@@ -16,3 +16,6 @@ _revert_repo/
 
 # OS
 .DS_Store
+
+# Session checkpoints (Layer 4) — per-machine run state
+runs/

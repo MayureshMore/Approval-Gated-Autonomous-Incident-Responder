@@ -5,6 +5,7 @@ Ripcord — the incident responder, CLI entrypoint.
     python run_agent.py --provider truefoundry --subagents   # the primary runtime
     python run_agent.py --provider sim                       # no API key needed
     python run_agent.py --selftest                           # verify wiring, run nothing
+    python run_agent.py --resume last                        # continue a killed run
 
 Providers
   truefoundry  PRIMARY. TRUEFOUNDRY_API_KEY (+ TRUEFOUNDRY_BASE_URL,
@@ -26,10 +27,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from agent.env import describe, load_dotenv
+
+load_dotenv()   # secrets come from .env (gitignored), never from the command line
+
 from agent.approval import ApprovalGate
 from agent.bus import EventBus
 from agent.core import IncidentAgent
 from agent.registry import audit
+from agent.session import RUNNING, SessionStore
 
 
 def make_provider(name: str, run_id: str | None = None):
@@ -90,7 +96,24 @@ def main() -> int:
     p.add_argument("--json", action="store_true", help="print the run report as JSON")
     p.add_argument("--list-models", action="store_true",
                    help="list the models this TrueFoundry gateway exposes, then exit")
+    p.add_argument("--resume", metavar="RUN_ID",
+                   help="continue a killed run ('last' picks the newest unfinished one)")
+    p.add_argument("--list-runs", action="store_true", help="show saved runs, then exit")
+    p.add_argument("--no-persist", action="store_true",
+                   help="do not checkpoint this run to runs/")
     args = p.parse_args()
+
+    store = SessionStore()
+
+    if args.list_runs:
+        runs = store.list_runs()
+        if not runs:
+            print("no saved runs")
+        for r in runs:
+            pending = f"  pending={r['pending']}" if r["pending"] else ""
+            print(f"{r['run_id']}  {r['status']:<9} step={r['step']:<3} "
+                  f"provider={r['provider']}{pending}")
+        return 0
 
     if args.list_models:
         from agent.providers.truefoundry import list_models
@@ -112,7 +135,11 @@ def main() -> int:
             problems.append(f"truefoundry gateway: {tfy.get('error')}")
 
     if args.selftest:
-        report = {"registry": audit(), "problems": problems}
+        report = {"registry": audit(), "problems": problems,
+                  "config": {n: describe(n) for n in (
+                      "TRUEFOUNDRY_API_KEY", "TRUEFOUNDRY_BASE_URL", "TRUEFOUNDRY_MODEL",
+                      "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AGENT_BUS_URL",
+                      "GITHUB_REPO", "GITHUB_REVERT_ENABLED")}}
         if args.provider == "truefoundry":
             report["truefoundry"] = tfy
         print(json.dumps(report, indent=2))
@@ -124,16 +151,31 @@ def main() -> int:
             print("  -", pr)
         return 1
 
-    bus = EventBus()
+    state = None
+    if args.resume:
+        run_id = store.latest() if args.resume == "last" else args.resume
+        if not run_id or not store.exists(run_id):
+            print(f"nothing to resume ({args.resume!r}). Try --list-runs.")
+            return 1
+        state = store.load(run_id)
+        if state.get("status") != RUNNING:
+            print(f"run {run_id} already finished with status={state.get('status')!r}")
+            return 1
+        print(f"Resuming {run_id} from step {state.get('step')} "
+              f"(pending: {[c['name'] for c in state.get('pending_calls', [])] or 'none'})")
+
+    # A resumed run keeps its run_id, so the dashboard timeline is continuous.
+    bus = EventBus(run_id=state["run_id"] if state else None)
     agent = IncidentAgent(
         provider=make_provider(args.provider, run_id=bus.run_id),
         bus=bus,
         gate=ApprovalGate(bus, timeout_s=args.approval_timeout),
-        include_github=args.github,
+        include_github=state.get("include_github", args.github) if state else args.github,
         max_steps=args.max_steps,
         use_subagents=args.subagents,
+        session=None if args.no_persist else store,
     )
-    report = agent.run()
+    report = agent.resume(state) if state else agent.run()
 
     print("\n" + "=" * 68)
     print(report.final_message or "(no final message)")
@@ -141,6 +183,8 @@ def main() -> int:
     print(f"provider={report.provider}  steps={report.steps}  "
           f"sandbox_runs={report.sandbox_runs}  "
           f"gated={report.gated_actions}  executed={report.executed_destructive}")
+    if not args.no_persist:
+        print(f"run_id={report.run_id}  (resume with: --resume {report.run_id})")
 
     if args.json:
         print(json.dumps({
