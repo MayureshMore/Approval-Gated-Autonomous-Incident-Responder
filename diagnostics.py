@@ -8,8 +8,19 @@ deploy correlates with the incident, so the diagnosis is evidence-backed.
 In the demo: the agent calls get_recent_deploys + get_logs, then runs
 correlate_deploy_to_incident(...) in the sandbox and cites the score in its reasoning.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """Give a naive datetime a UTC tzinfo.
+
+    The environment emits offset-aware timestamps, so a naive datetime from the
+    agent would blow up on subtraction ("can't subtract offset-naive and
+    offset-aware"). Assuming UTC is right here: every timestamp in this system
+    is UTC, and refusing would waste a sandbox run mid-incident.
+    """
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
 def _parse(ts) -> datetime:
@@ -19,9 +30,9 @@ def _parse(ts) -> datetime:
     here buys nothing and costs a wasted sandbox run mid-incident.
     """
     if isinstance(ts, datetime):
-        return ts
+        return _as_utc(ts)
     if isinstance(ts, str):
-        return datetime.fromisoformat(ts)
+        return _as_utc(datetime.fromisoformat(ts))
     raise TypeError(
         f"expected an ISO-8601 timestamp string or datetime, got {type(ts).__name__}: {ts!r}")
 

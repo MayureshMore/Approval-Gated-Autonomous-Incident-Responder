@@ -149,3 +149,25 @@ def test_the_subagent_lines_field_scores_correctly():
     lines = [{"level": "ERROR", "message": "NullPointer in PaymentProcessor after v1.4.2"}]
     out = correlate_deploy_to_incident(_iso(minutes=3), _deploys(("v1.4.2", 15)), lines)
     assert out["suspicion_score"] == 0.76
+
+
+def test_naive_datetime_is_treated_as_utc():
+    """
+    Accepting datetimes was pointless while a naive one still crashed: the
+    environment emits offset-aware timestamps, so subtraction raised
+    "can't subtract offset-naive and offset-aware datetimes".
+    """
+    from datetime import datetime
+    # Naive but UTC — which is what _as_utc documents and what this system emits.
+    naive = (datetime.now(timezone.utc) - timedelta(minutes=3)).replace(tzinfo=None)
+    out = correlate_deploy_to_incident(naive, _deploys(("v1.4.2", 15)), [])
+    assert out["suspect"] == "v1.4.2"
+    assert out["minutes_before_alert"] > 0
+
+
+def test_naive_deploy_timestamps_also_work():
+    from datetime import datetime
+    naive_deploy = (datetime.now(timezone.utc) - timedelta(minutes=15)).replace(tzinfo=None)
+    deploys = [{"version": "v1.4.2", "deployed_at": naive_deploy}]
+    out = correlate_deploy_to_incident(_iso(minutes=3), deploys, [])
+    assert out["suspect"] == "v1.4.2"

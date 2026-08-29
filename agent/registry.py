@@ -11,28 +11,50 @@ chat wrapper:
 It also emits schemas in both OpenAI and Anthropic dialects from the same
 definitions, so switching provider never means editing a tool twice.
 """
-import inspect
+import ast
+import os
 from typing import Any, Callable
 
-import diagnostics
 import tools
 from sandbox.runner import run_diagnostic
 from tool_schemas import TOOL_SCHEMAS as ENV_TOOL_SCHEMAS
 
-def _diagnostics_api() -> str:
+DIAGNOSTICS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "diagnostics.py")
+SANDBOX_HELPERS = ("correlate_deploy_to_incident", "recommend_rollback_target")
+
+
+def _diagnostics_api(path: str = DIAGNOSTICS_PATH) -> str:
     """Render the real signatures of the sandbox helpers.
 
-    Generated from the code rather than written by hand: a model that has to
-    guess a signature guesses wrong. In a live gateway run GPT-4o burned three
-    sandbox attempts on `deploy_times=`, then a missing positional, then a type
-    error — and never produced the correlation score the demo is built around.
-    Generating this also means the description can never drift from the code.
+    Read out of the source with `ast`, deliberately NOT by importing the module:
+    `diagnostics` is sandbox-destined code, and the parent process should never
+    execute it. Today it only defines functions, but the whole point of the
+    sandbox is that we do not have to keep checking that.
+
+    Generated rather than hand-written because a model that has to guess a
+    signature guesses wrong — in a live gateway run GPT-4o burned three sandbox
+    attempts and never produced the correlation score the demo is built around.
+    Generating it also means the text cannot drift from the code.
     """
+    with open(path) as f:
+        tree = ast.parse(f.read(), filename=path)
+
+    found = {
+        node.name: node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in SANDBOX_HELPERS
+    }
+    missing = [n for n in SANDBOX_HELPERS if n not in found]
+    if missing:
+        raise RuntimeError(f"diagnostics.py no longer defines {missing}")
+
     lines = []
-    for fn in (diagnostics.correlate_deploy_to_incident,
-               diagnostics.recommend_rollback_target):
-        summary = (fn.__doc__ or "").strip().splitlines()[0]
-        lines.append(f"  {fn.__name__}{inspect.signature(fn)}\n      {summary}")
+    for name in SANDBOX_HELPERS:
+        node = found[name]
+        returns = f" -> {ast.unparse(node.returns)}" if node.returns else ""
+        summary = (ast.get_docstring(node) or "").strip().splitlines()
+        lines.append(f"  {name}({ast.unparse(node.args)}){returns}"
+                     + (f"\n      {summary[0]}" if summary else ""))
     return "\n".join(lines)
 
 
