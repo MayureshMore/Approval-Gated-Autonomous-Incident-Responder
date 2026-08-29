@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Incident Responder</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#2a3140;
+    --text:#e6edf3; --muted:#8b949e; --accent:#4493f8;
+    --ok:#3fb950; --warn:#d29922; --crit:#f85149; --pending:#d29922;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       background:var(--bg);color:var(--text)}
+  header{display:flex;align-items:center;gap:14px;padding:16px 24px;border-bottom:1px solid var(--border);
+         background:var(--panel)}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  .sub{color:var(--muted);font-size:12px}
+  .badge{padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600}
+  .badge.crit{background:rgba(248,81,73,.15);color:var(--crit)}
+  .badge.ok{background:rgba(63,185,80,.15);color:var(--ok)}
+  .badge.run{background:rgba(68,147,248,.15);color:var(--accent)}
+  .wrap{display:grid;grid-template-columns:1fr 340px;gap:20px;padding:20px 24px;max-width:1200px;margin:0 auto}
+  @media(max-width:820px){.wrap{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);
+           margin:0;padding:12px 16px;border-bottom:1px solid var(--border)}
+  /* timeline */
+  .step{display:flex;gap:12px;padding:12px 16px;border-bottom:1px solid var(--border)}
+  .step:last-child{border-bottom:none}
+  .dot{width:26px;height:26px;border-radius:50%;flex:0 0 26px;display:grid;place-items:center;
+       font-size:13px;background:var(--panel2)}
+  .step .body{flex:1;min-width:0}
+  .step .title{font-weight:600}
+  .step .meta{color:var(--muted);font-size:12.5px;word-break:break-word}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:12.5px}
+  /* approval card */
+  #approval{border:1px solid var(--pending);background:linear-gradient(180deg,rgba(210,153,34,.10),transparent)}
+  #approval.hidden{display:none}
+  #approval h2{color:var(--pending);border-color:var(--pending)}
+  .approval-body{padding:16px}
+  .action-line{font-size:15px;font-weight:600;margin-bottom:6px}
+  .reason{color:var(--muted);margin:8px 0 16px}
+  .btns{display:flex;gap:10px}
+  button{flex:1;padding:11px;border:none;border-radius:8px;font-weight:600;font-size:14px;cursor:pointer}
+  .approve{background:var(--ok);color:#03210c}
+  .reject{background:transparent;color:var(--crit);border:1px solid var(--crit)}
+  button:disabled{opacity:.5;cursor:default}
+  .metric{display:flex;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--border)}
+  .metric:last-child{border-bottom:none}
+  .metric .v{font-variant-numeric:tabular-nums;font-weight:600}
+  .v.bad{color:var(--crit)} .v.good{color:var(--ok)}
+  .empty{padding:24px 16px;color:var(--muted);text-align:center}
+  .resolved{padding:16px;color:var(--ok);font-weight:600;display:none}
+  .resolved.show{display:block}
+</style>
+</head>
+<body>
+<header>
+  <h1>🛰️ Incident Responder</h1>
+  <span class="sub" id="scenario">waiting for run…</span>
+  <span style="flex:1"></span>
+  <span class="badge run" id="status">IDLE</span>
+</header>
+
+<div class="wrap">
+  <div style="display:flex;flex-direction:column;gap:20px">
+    <div class="card" id="approval">
+      <h2>⏸ Waiting for your approval</h2>
+      <div class="approval-body">
+        <div class="action-line" id="ap-action"></div>
+        <div class="reason" id="ap-reason"></div>
+        <div class="btns">
+          <button class="approve" id="btn-approve">Approve</button>
+          <button class="reject" id="btn-reject">Reject</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Agent activity</h2>
+      <div id="timeline"><div class="empty">No activity yet. Start the agent.</div></div>
+      <div class="resolved" id="resolved"></div>
+    </div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:20px">
+    <div class="card">
+      <h2>checkout-service</h2>
+      <div class="metric"><span>Status</span><span class="v" id="m-status">—</span></div>
+      <div class="metric"><span>Version</span><span class="v" id="m-version">—</span></div>
+      <div class="metric"><span>Error rate</span><span class="v" id="m-err">—</span></div>
+      <div class="metric"><span>p99 latency</span><span class="v" id="m-lat">—</span></div>
+    </div>
+    <div class="card">
+      <h2>Harness features seen</h2>
+      <div class="metric"><span>Sandbox code</span><span class="v" id="f-sandbox">—</span></div>
+      <div class="metric"><span>Approval gate</span><span class="v" id="f-approval">—</span></div>
+      <div class="metric"><span>Real action</span><span class="v" id="f-real">—</span></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const ICON = {run_started:"▶",tool_call:"🔧",tool_result:"✓",awaiting_approval:"⏸",
+  approval_decision:"👤",agent_message:"💬",run_finished:"🏁"};
+let decided = new Set();
+
+function fmtArgs(a){return a?Object.entries(a).map(([k,v])=>`${k}=${v}`).join(", "):""}
+
+async function fetchEvents(){
+  for(const url of ["/events","events.json"]){
+    try{const r=await fetch(url,{cache:"no-store"}); if(r.ok) return await r.json();}catch(e){}
+  }
+  return [];
+}
+
+function updateMetrics(m){
+  if(!m||m.service!=="checkout-service")return;
+  document.getElementById("m-status").textContent=m.status;
+  document.getElementById("m-status").className="v "+(m.status==="healthy"?"good":"bad");
+  document.getElementById("m-version").textContent=m.version;
+  const err=document.getElementById("m-err");
+  err.textContent=(m.error_rate*100).toFixed(1)+"%"; err.className="v "+(m.error_rate>0.05?"bad":"good");
+  const lat=document.getElementById("m-lat");
+  lat.textContent=m.p99_latency_ms+"ms"; lat.className="v "+(m.p99_latency_ms>1000?"bad":"good");
+}
+
+async function sendDecision(action,approved){
+  try{await fetch("/decision",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({action,approved})});}catch(e){}
+}
+
+function render(events){
+  const tl=document.getElementById("timeline");
+  const statusEl=document.getElementById("status");
+  let pending=null, lastMetrics=null, sawSandbox=false, sawReal=false, finished=false;
+
+  const rows=[];
+  for(const e of events){
+    if(e.kind==="run_started"){document.getElementById("scenario").textContent=e.scenario||"incident";
+      statusEl.textContent="INVESTIGATING";statusEl.className="badge run";}
+    if(e.kind==="tool_result"&&e.result&&e.result.service&&e.result.status)lastMetrics=e.result;
+    if(e.kind==="tool_result"&&e.result&&e.result.p99_latency_ms!==undefined)lastMetrics=e.result;
+    if(e.kind==="tool_call"&&/diagnos|correlate|sandbox/i.test(JSON.stringify(e)))sawSandbox=true;
+    if(e.kind==="tool_call"&&/github|pr|revert|slack/i.test(JSON.stringify(e)))sawReal=true;
+    if(e.kind==="awaiting_approval"&&!decided.has(e.action))pending=e;
+    if(e.kind==="approval_decision"){decided.add(e.action); if(pending&&pending.action===e.action)pending=null;}
+    if(e.kind==="run_finished")finished=true;
+
+    let text="";
+    if(e.kind==="tool_call")text=`<span class="title">${e.tool}</span><div class="meta"><code>${fmtArgs(e.args)}</code></div>`;
+    else if(e.kind==="tool_result")text=`<span class="title">result</span><div class="meta">${escapeHtml(JSON.stringify(e.result)).slice(0,180)}</div>`;
+    else if(e.kind==="awaiting_approval")text=`<span class="title">Proposed: ${e.action}</span><div class="meta">${fmtArgs(e.args)}</div>`;
+    else if(e.kind==="approval_decision")text=`<span class="title">${e.approved?"Approved":"Rejected"} ${e.action}</span><div class="meta">by ${e.by}</div>`;
+    else if(e.kind==="agent_message")text=`<span class="title">Agent</span><div class="meta">${escapeHtml(e.text||"")}</div>`;
+    else if(e.kind==="run_started")text=`<span class="title">Run started</span><div class="meta">${e.scenario||""}</div>`;
+    else if(e.kind==="run_finished")text=`<span class="title">Run finished</span>`;
+    else continue;
+    rows.push(`<div class="step"><div class="dot">${ICON[e.kind]||"•"}</div><div class="body">${text}</div></div>`);
+  }
+  tl.innerHTML=rows.length?rows.join(""):`<div class="empty">No activity yet. Start the agent.</div>`;
+  tl.scrollTop=tl.scrollHeight;
+
+  updateMetrics(lastMetrics);
+  document.getElementById("f-sandbox").textContent=sawSandbox?"✓":"—";
+  document.getElementById("f-approval").textContent=decided.size?"✓":(pending?"waiting":"—");
+  document.getElementById("f-real").textContent=sawReal?"✓":"—";
+
+  // approval card
+  const ap=document.getElementById("approval");
+  if(pending){
+    ap.classList.remove("hidden");
+    document.getElementById("ap-action").textContent=`${pending.action}(${fmtArgs(pending.args)})`;
+    document.getElementById("ap-reason").textContent=pending.reason||"";
+    statusEl.textContent="AWAITING APPROVAL";statusEl.className="badge crit";
+    document.getElementById("btn-approve").onclick=()=>{decided.add(pending.action);sendDecision(pending.action,true);ap.classList.add("hidden");};
+    document.getElementById("btn-reject").onclick=()=>{decided.add(pending.action);sendDecision(pending.action,false);ap.classList.add("hidden");};
+  }else{
+    ap.classList.add("hidden");
+  }
+
+  if(finished&&lastMetrics&&lastMetrics.status==="healthy"){
+    statusEl.textContent="RESOLVED";statusEl.className="badge ok";
+    const r=document.getElementById("resolved");
+    r.classList.add("show");
+    r.textContent=`✓ Resolved — checkout-service back to ${lastMetrics.version}, error rate ${(lastMetrics.error_rate*100).toFixed(1)}%`;
+  }
+}
+
+function escapeHtml(s){return (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+
+async function loop(){ render(await fetchEvents()); setTimeout(loop,1200); }
+loop();
+</script>
+</body>
+</html>
