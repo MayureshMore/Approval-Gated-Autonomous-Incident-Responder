@@ -206,7 +206,7 @@ mid-demo to show there is nothing up our sleeve.
 
 ## If you are resuming cold
 1. `.venv/bin/python run_agent.py --selftest` → expect `PASS` (mock env must be up).
-2. `.venv/bin/python -m pytest` → expect **136 passed**.
+2. `.venv/bin/python -m pytest` → expect **153 passed**.
 3. Do a full dashboard run (commands at the top). If that is green, the demo is safe.
 4. Then: A2 live (needs gateway onboarding) or A6 live (needs `gh` + a repo).
 
@@ -275,6 +275,17 @@ Confirmed working against my gate.
 ## 6. What I did NOT touch
 `mock_env/`, `approval_server.py`, `ui/dashboard.html`, `DEMO_SCRIPT.md` are
 untouched and still yours. I only added a contract addendum to `EVENT_CONTRACT.md`.
+
+## 7a. Heads-up: the demo script's 0.76 is now actually true on the live path
+`DEMO_SCRIPT.md` narrates *"it writes a diagnostic and runs it in a sandbox to
+score the correlation: 0.76."* On `--provider sim` that was always true. On the
+**live gateway** it was not — the model guessed the function signature and the
+score was never computed, or it passed a subagent summary and scored 0.36.
+Fixed in PR #5 and re-verified live: one sandbox attempt, 0.76, recovered.
+
+So the narration is safe for both `make demo` and `make demo-live`. If you
+rehearse on the gateway and see anything other than 0.76, tell me — that means a
+regression, not a model quirk.
 
 ## 7. Your critical path, given where I am
 - **B6 (record the demo twice) is now the top priority.** The gateway is live and
