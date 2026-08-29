@@ -36,7 +36,7 @@ def emit(kind: str, **data):
     ev = {"t": time.time(), "kind": kind, **data}
     _events.append(ev)
     os.makedirs(os.path.dirname(EVENTS_PATH), exist_ok=True)
-    with open(EVENTS_PATH, "w") as f:
+    with open(EVENTS_PATH, "w", encoding="utf-8") as f:
         json.dump(_events, f, indent=2)
     if BUS:
         try:
@@ -79,7 +79,8 @@ def ask_approval(name: str, args: dict, reason: str) -> bool:
     return approved
 
 
-SYSTEM = open(os.path.join(os.path.dirname(__file__), "agent_prompt.md")).read()
+SYSTEM = open(os.path.join(os.path.dirname(__file__), "agent_prompt.md"),
+              encoding="utf-8").read()
 
 
 def main():

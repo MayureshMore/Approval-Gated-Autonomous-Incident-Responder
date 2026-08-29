@@ -37,7 +37,7 @@ def _diagnostics_api(path: str = DIAGNOSTICS_PATH) -> str:
     attempts and never produced the correlation score the demo is built around.
     Generating it also means the text cannot drift from the code.
     """
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         tree = ast.parse(f.read(), filename=path)
 
     found = {

@@ -279,6 +279,20 @@ Also hardened `approval_server.py` inputs: malformed JSON returned **HTTP 500**
 and recorded under the key `None`, rendering as an approval belonging to no gate.
 Both now return 400.
 
+### 6. Text file I/O used the locale codec, not UTF-8 (found after PR #5)
+`tests/test_dashboard.py` failed with **13 UnicodeDecodeErrors** on Windows:
+`open(DASHBOARD)` with no `encoding=` falls back to the locale codec — cp1252
+here — and the dashboard is UTF-8 (the header emoji). Same shape as the CRLF
+bug: invisible on macOS, fatal on Windows.
+
+Swept the repo and gave every text-mode `open()` an explicit `encoding="utf-8"`
+(`agent/bus.py`, `core.py`, `env.py`, `registry.py`, `session.py`,
+`fallback_agent.py`, three test modules). Most were latent rather than broken —
+their non-ASCII happens to be cp1252-compatible — but `agent/bus.py` and
+`agent/session.py` write JSON, which is UTF-8 by definition, and a single `✓` in
+an agent message is enough to raise `UnicodeEncodeError` mid-run (confirmed by
+probe). Suite went **202 passed + 13 errors → 215 passed**.
+
 ### Verified working (no change needed)
 - **Mayuresh's XSS fix holds.** Injected `<img src=x onerror=...>` into every
   model-controlled field: zero live payloads in the HTML sink, 17 correctly

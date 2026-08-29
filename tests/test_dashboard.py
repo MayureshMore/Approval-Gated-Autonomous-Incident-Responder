@@ -20,7 +20,10 @@ DASHBOARD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 
 @pytest.fixture(scope="module")
 def html() -> str:
-    with open(DASHBOARD) as f:
+    # The dashboard is UTF-8 (emoji in the header and the step icons). Without an
+    # explicit encoding, open() uses the locale codec, which is cp1252 on Windows
+    # and raises UnicodeDecodeError before a single assertion runs.
+    with open(DASHBOARD, encoding="utf-8") as f:
         return f.read()
 
 
