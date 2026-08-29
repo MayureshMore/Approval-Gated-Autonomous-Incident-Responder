@@ -24,6 +24,7 @@ class SimProvider:
         self.turn = 0
         self.seen: dict[str, Any] = {}
         self._rejected = False
+        self._denied_by = ""
 
     def start(self, system: str, user: str) -> None:  # noqa: ARG002 - fixed script
         self.turn = 0
@@ -44,17 +45,24 @@ class SimProvider:
         if call.name in ("rollback_service", "restart_service", "scale_service") \
                 and isinstance(result, dict) and result.get("rejected"):
             self._rejected = True
+            # Who actually said no. A denial from the gate failing closed (dead
+            # bus, timeout, no tty) is NOT a human decision, and claiming it was
+            # is the agent misreporting provenance — on a project whose whole
+            # thesis is honest human-in-the-loop, that is the worst sentence we
+            # could put on screen.
+            self._denied_by = str(result.get("decided_by") or "")
 
     # -- session persistence (Layer 4) --------------------------------------
     def snapshot(self) -> dict:
-        return {"turn": self.turn, "seen": self.seen,
-                "service": self.service, "rejected": self._rejected}
+        return {"turn": self.turn, "seen": self.seen, "service": self.service,
+                "rejected": self._rejected, "denied_by": self._denied_by}
 
     def restore(self, state: dict) -> None:
         self.turn = state.get("turn", 0)
         self.seen = state.get("seen", {})
         self.service = state.get("service", self.service)
         self._rejected = state.get("rejected", False)
+        self._denied_by = state.get("denied_by", "")
 
     # -- the script ---------------------------------------------------------
     def step(self, schemas: list[dict]) -> AssistantTurn:  # noqa: ARG002
@@ -137,10 +145,17 @@ class SimProvider:
 
     def _t7_verify(self, _):
         if self._rejected:
+            if self._denied_by == "human":
+                who = "Rollback rejected by the on-call human."
+            elif self._denied_by:
+                who = (f"Rollback denied by {self._denied_by} — the approval gate failed "
+                       "closed, so no human ever saw this request.")
+            else:
+                who = "Rollback denied."
             return AssistantTurn(text=(
-                "Rollback rejected by the on-call human. Standing down — I will not retry "
-                "or substitute a different destructive action. checkout-service remains "
-                "degraded on the suspect version; escalate to the service owner."))
+                f"{who} Standing down — I will not retry or substitute a different "
+                "destructive action. checkout-service remains degraded on the suspect "
+                "version; escalate to the service owner."))
         return self._call("get_metrics", service=self.service)
 
     def _t8_report(self, _):

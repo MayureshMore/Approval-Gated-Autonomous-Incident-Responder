@@ -289,3 +289,58 @@ def test_a_model_that_omits_reason_entirely_does_not_crash(env, bus):
 
     assert seen == {"service": "checkout-service", "to_version": "v1.4.1"}
     assert "gave no rationale" in card_reason
+
+
+# --- the agent must not misreport who denied it ----------------------------
+def test_a_human_rejection_is_reported_as_a_human_rejection(env, bus):
+    report, _ = _run(bus, approve=False)
+    assert "on-call human" in report.final_message
+
+
+def test_a_gate_that_fails_closed_is_not_reported_as_a_human(env, bus):
+    """A dead bus, a timeout or a non-tty all deny — but no human saw it.
+
+    Saying "rejected by the on-call human" there is the agent inventing a
+    human decision, on a project whose entire claim is that a human made it.
+    """
+    gate = ScriptedGate(bus, approve=False, by="system")
+    agent = IncidentAgent(SimProvider(), bus=bus, gate=gate)
+    report = agent.run()
+
+    assert "on-call human" not in report.final_message
+    assert "failed" in report.final_message and "no human" in report.final_message
+    # Still stands down, whoever said no.
+    assert report.executed_destructive == []
+
+
+# --- approval is not execution ---------------------------------------------
+class BrokenEnvProvider(SilentProvider):
+    """Proposes a rollback the environment will refuse."""
+
+    def step(self, schemas):
+        self._turn += 1
+        if self._turn == 1:
+            return AssistantTurn(text="Rolling back.", tool_calls=[ToolCall(
+                "c1", "rollback_service",
+                # A version that never shipped — the env refuses it.
+                {"service": "checkout-service", "to_version": "v0.0.0-never-shipped",
+                 "reason": "testing the failure path"})])
+        return AssistantTurn(text="done")
+
+
+def test_an_approved_action_that_fails_is_not_reported_as_executed(env, bus):
+    """The env being unreachable, or refusing, means production did not change.
+    Saying "executed" there overstates what we did."""
+    gate = ScriptedGate(bus, approve=True)
+    report = IncidentAgent(BrokenEnvProvider(), bus=bus, gate=gate, max_steps=3).run()
+
+    assert report.gated_actions == ["rollback_service"]      # it was proposed
+    assert report.executed_destructive == []                 # but nothing happened
+    assert report.approved_but_failed == ["rollback_service"]
+
+
+def test_a_successful_approved_action_is_still_reported_as_executed(env, bus):
+    report, _ = _run(bus, approve=True)
+
+    assert report.executed_destructive == ["rollback_service"]
+    assert report.approved_but_failed == []

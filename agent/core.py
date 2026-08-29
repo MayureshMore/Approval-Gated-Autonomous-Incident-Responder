@@ -50,7 +50,21 @@ class RunReport:
 
     @property
     def executed_destructive(self) -> list[str]:
-        return [a["action"] for a in self.approvals if a["approved"]]
+        """Approved AND actually carried out.
+
+        Approval is not execution: if the environment is unreachable the call
+        comes back {"ok": false, ...} and nothing happened to production.
+        Reporting it as executed overstates what we did, on the one line an
+        operator reads to find out what we did.
+        """
+        return [a["action"] for a in self.approvals
+                if a["approved"] and a.get("succeeded", True)]
+
+    @property
+    def approved_but_failed(self) -> list[str]:
+        """Human said yes, the action then failed. Worth saying out loud."""
+        return [a["action"] for a in self.approvals
+                if a["approved"] and not a.get("succeeded", True)]
 
 
 class IncidentAgent:
@@ -219,6 +233,11 @@ class IncidentAgent:
 
         self.bus.emit("tool_call", tool=call.name, args=_trim_args(call.args))
         result = self._execute(call)
+        if is_gated(call.name) and self.report.approvals:
+            # Record whether the approved action actually landed, so the run
+            # report cannot claim we changed production when we did not.
+            failed = isinstance(result, dict) and result.get("ok") is False
+            self.report.approvals[-1]["succeeded"] = not failed
         self.bus.emit("tool_result", tool=call.name, result=_trim_result(call.name, result))
         return result
 

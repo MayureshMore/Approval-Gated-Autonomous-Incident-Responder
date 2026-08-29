@@ -212,6 +212,21 @@ def scale(req: ScaleReq):
     v = STATE["services"].get(req.service)
     if not v:
         return {"ok": False, "error": f"unknown service '{req.service}'"}
+
+    # Same reasoning as the rollback version guard: an environment that
+    # confirms a nonsensical destructive action rewards a wrong diagnosis.
+    # It used to answer {"ok": true, "replicas": -5, "Scaled ... to -5
+    # replicas."} — a success response for something no orchestrator would do.
+    MAX_REPLICAS = 100
+    if req.replicas < 1:
+        return {"ok": False, "service": req.service, "replicas": v["replicas"],
+                "message": (f"Cannot scale {req.service} to {req.replicas} — replicas must be "
+                            "at least 1. Nothing changed.")}
+    if req.replicas > MAX_REPLICAS:
+        return {"ok": False, "service": req.service, "replicas": v["replicas"],
+                "message": (f"Cannot scale {req.service} to {req.replicas} — the cluster caps a "
+                            f"service at {MAX_REPLICAS} replicas. Nothing changed.")}
+
     v["replicas"] = req.replicas
     return {"ok": True, "service": req.service, "replicas": req.replicas,
             "message": f"Scaled {req.service} to {req.replicas} replicas."}

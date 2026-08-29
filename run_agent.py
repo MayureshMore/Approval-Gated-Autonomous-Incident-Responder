@@ -234,7 +234,9 @@ def main() -> int:
     print("=" * 68)
     print(f"provider={report.provider}  steps={report.steps}  "
           f"sandbox_runs={report.sandbox_runs}  "
-          f"gated={report.gated_actions}  executed={report.executed_destructive}")
+          f"gated={report.gated_actions}  executed={report.executed_destructive}"
+          + (f"  APPROVED-BUT-FAILED={report.approved_but_failed}"
+             if report.approved_but_failed else ""))
     if not args.no_persist:
         print(f"run_id={report.run_id}  (resume with: --resume {report.run_id})")
 

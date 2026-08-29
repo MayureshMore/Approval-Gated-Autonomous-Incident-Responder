@@ -284,3 +284,36 @@ def test_signature_extraction_fails_loudly_if_a_helper_disappears(tmp_path):
     stub.write_text("def something_else():\n    pass\n")
     with pytest.raises(RuntimeError, match="no longer defines"):
         _diagnostics_api(str(stub))
+
+
+# --- the environment must not confirm a nonsensical destructive action ------
+# Same reasoning as the rollback version guard: if /scale answers "ok" to
+# anything, a wrong diagnosis still looks like a success.
+def test_scale_rejects_replica_counts_below_one(env):
+    before = tools.get_metrics("checkout-service")["replicas"]
+    for bad in (-5, 0):
+        r = tools.scale_service("checkout-service", bad)
+        assert r["ok"] is False, f"scale to {bad} was accepted"
+        assert "at least 1" in r["message"]
+    assert tools.get_metrics("checkout-service")["replicas"] == before
+
+
+def test_scale_rejects_an_absurd_replica_count(env):
+    before = tools.get_metrics("checkout-service")["replicas"]
+    r = tools.scale_service("checkout-service", 10 ** 9)
+    assert r["ok"] is False
+    assert "caps a service" in r["message"]
+    assert tools.get_metrics("checkout-service")["replicas"] == before
+
+
+def test_scale_still_works_for_sane_values(env):
+    r = tools.scale_service("checkout-service", 6)
+    assert r["ok"] is True
+    assert tools.get_metrics("checkout-service")["replicas"] == 6
+
+
+def test_a_refused_scale_reports_the_replica_count_that_is_still_live(env):
+    """The agent reads `replicas` back — it must be the truth, not the ask."""
+    tools.scale_service("checkout-service", 5)
+    r = tools.scale_service("checkout-service", 0)
+    assert r["replicas"] == 5, "a refusal reported the requested count as if applied"

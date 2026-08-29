@@ -1,6 +1,6 @@
 # Person B — Interface, Environment & Demo (owner: Zeel)
 
-Paste this into Claude Code as your working brief.
+Your working brief.
 
 ## Your mission
 Make Ripcord something a stranger can pick up and drive — win the UI/iPad track —
@@ -41,7 +41,7 @@ is tested and works.
 Dashboard shows a full run, in-UI approval works against A's live agent, tablet-
 friendly, demo recorded, Qodo run clean, blog drafted.
 
-## Ask Claude Code to start with
+## Start with
 "Read CLAUDE.md, TOOL_CONTRACT.md, EVENT_CONTRACT.md, approval_server.py,
 ui/dashboard.html, mock_env/main.py. Then help me do B1: run the mock env, the
 approval server, and the dashboard, and confirm a run renders end to end."
