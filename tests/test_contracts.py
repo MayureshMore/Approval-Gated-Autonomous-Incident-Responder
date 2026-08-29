@@ -6,11 +6,14 @@ field or invents an event kind, the dashboard silently stops rendering and we
 find out on stage. These tests turn that into a red build instead.
 """
 import inspect
+import os
 
 import pytest
 
 import tools
 from agent.bus import CONTRACT_KINDS, EXTENDED_KINDS
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from agent.registry import REQUIRES_APPROVAL, build_registry
 
 
@@ -145,10 +148,14 @@ def test_sandbox_description_carries_the_real_signatures():
     import diagnostics
     from agent.registry import SANDBOX_TOOL_SCHEMA
 
-    desc = SANDBOX_TOOL_SCHEMA["function"]["description"]
+    def squash(text: str) -> str:
+        """inspect renders `x: T = None`, ast renders `x: T=None`. Same signature."""
+        return "".join(text.split())
+
+    desc = squash(SANDBOX_TOOL_SCHEMA["function"]["description"])
     for fn in (diagnostics.correlate_deploy_to_incident,
                diagnostics.recommend_rollback_target):
-        assert f"{fn.__name__}{inspect.signature(fn)}" in desc, \
+        assert squash(f"{fn.__name__}{inspect.signature(fn)}") in desc, \
             f"{fn.__name__}'s real signature is not shown to the model"
 
 
@@ -167,3 +174,34 @@ def test_the_documented_example_actually_runs(demo_payload):
     assert out["ok"], out["error"]
     assert out["result"]["suspect"] == "v1.4.2"
     assert out["result"]["rollback_target"] == "v1.4.1"
+
+
+def test_registry_does_not_import_the_sandbox_module():
+    """
+    `diagnostics` is sandbox-destined code; the parent process must never
+    execute it. Signatures are read with `ast`, not by importing. Today the
+    module only defines functions — the point of the sandbox is not having to
+    keep re-checking that.
+    """
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys; sys.path.insert(0, '.');"
+        "import agent.registry;"
+        "print('diagnostics' in sys.modules)"
+    )
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+                         text=True, cwd=REPO_ROOT)
+    assert out.stdout.strip() == "False", "importing agent.registry executed diagnostics.py"
+
+
+def test_signature_extraction_fails_loudly_if_a_helper_disappears(tmp_path):
+    """Silently dropping a helper from the description would send the model back
+    to guessing — the exact failure this whole mechanism exists to prevent."""
+    from agent.registry import _diagnostics_api
+
+    stub = tmp_path / "diagnostics.py"
+    stub.write_text("def something_else():\n    pass\n")
+    with pytest.raises(RuntimeError, match="no longer defines"):
+        _diagnostics_api(str(stub))
