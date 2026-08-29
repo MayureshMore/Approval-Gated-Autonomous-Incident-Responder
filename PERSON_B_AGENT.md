@@ -144,6 +144,26 @@ touches this one; most of it is now addressed (see B3 below).
   practice. Nothing else for B5 can proceed until the repo is public and the
   app is installed.
 
+  **Update, same session:** repo is now public (confirmed via
+  `gh api .../--jq .private` → `false`). Mayuresh said he installed Qodo, so
+  we opened a real test PR to confirm:
+  **https://github.com/MayureshMore/Approval-Gated-Autonomous-Incident-Responder/pull/1**
+  ("Dashboard: show which provider ran the agent" — a small real feature,
+  branch `feature/dashboard-provider-badge`, not a throwaway). **After 15+
+  minutes, zero activity**: `gh api .../issues/1/comments` → 0, `.../pulls/1/reviews`
+  → 0, `gh pr checks 1` → "no checks reported", timeline shows only the
+  `committed` event. This strongly suggests the GitHub App either wasn't
+  actually selected for *this* repo during install (easy to pick the wrong
+  repo in the picker), or was installed on a different account than
+  `MayureshMore`, or the webhook isn't firing for some other reason.
+  **Next action:** ask Mayuresh to check
+  https://github.com/settings/installations (or his org's equivalent) and
+  confirm this specific repo is listed under the Qodo Merge installation's
+  repository access — don't just take "I installed it" at face value, verify
+  the repo picker actually included this one. PR #1 is left open and is the
+  natural place to re-check once he confirms/fixes the install — no need to
+  open a new one.
+
 - **B6 — Demo: NOT STARTED.** Person A's advice (in his handoff) is to record
   this *before* chasing further polish, since `--provider sim` gives a
   reliable, API-key-free green run right now. Worth also showing the Layer 4
@@ -153,21 +173,49 @@ touches this one; most of it is now addressed (see B3 below).
 - **B7 — Blog: NOT STARTED.**
 
 ## Next steps (in priority order)
-1. **Message Mayuresh: make the repo public + install Qodo Merge (see B5
-   above for exact links/steps).** Both need his admin access; this is the
-   single blocking action for B5 and possibly the whole hackathon's judging
-   eligibility (open-source requirement).
-2. Once he's done that: open a small real PR, confirm Qodo comments on it,
-   fix findings, merge. That completes B5.
-3. Manually eyeball the dashboard in a browser at tablet width — the one
+1. **Ask Mayuresh to check https://github.com/settings/installations (or org
+   equivalent) and confirm this specific repo is actually selected** under
+   the Qodo Merge app's repository access — PR #1 has sat with zero Qodo
+   activity for 15+ minutes despite him saying he installed it, so something
+   in the install didn't take for this repo specifically. Re-check PR #1
+   once he's confirmed/fixed it; no need for a new PR.
+2. Manually eyeball the dashboard in a browser at tablet width — the one
    verification this session's tooling can't do.
-4. Try the actual Layer 4 resume demo end-to-end against the dashboard (kill
-   agent mid-approval, `--list-runs`, `--resume last`) to see `run_resumed`
-   render for real, not just synthetically.
-5. Record the demo (B6) — Person A's advice is to do this *before* chasing
-   more polish, since `--provider sim` gives a reliable green run right now;
-   include the resume beat if #4 looks good.
-6. Draft blog (B7).
+3. Record the demo (B6) — Person A's advice is to do this *before* chasing
+   more polish, since `--provider sim` gives a reliable green run right now.
+   **The Layer 4 resume beat is now fully demo-ready** (see below) — include
+   it.
+4. Draft blog (B7).
+
+## Layer 4 resume demo — verified for real this session (not just synthetic)
+Ran the full sequence Person A documented, for real, end-to-end:
+1. Reset, started `run_agent.py --provider sim --subagents`, let it reach
+   `awaiting_approval` (real sandboxed diagnostic ran once, score 0.76).
+2. Killed the actual OS process (found via
+   `Get-CimInstance Win32_Process -Filter "Name='py.exe' or Name='python.exe'"`
+   since backgrounded jobs don't persist as shell jobs across separate tool
+   calls in this environment — matched on the full command line to avoid
+   hitting the two long-running demo servers). Confirmed the bus's `/events`
+   was completely unaffected (still 22 events, last one `awaiting_approval`)
+   — approval_server is a separate process, so killing the agent can't touch
+   it.
+3. `run_agent.py --list-runs` → `f22a7979 running step=6 provider=sim
+   pending=['rollback_service']`, exactly as documented.
+4. `run_agent.py --provider sim --resume last` → emitted `run_resumed
+   {step:6, pending:['rollback_service']}`, then a **new** `awaiting_approval`
+   for the same action with a **different `request_id`** than the pre-kill
+   one. Confirmed only one `sandbox_exec`/`run_diagnostic` total across the
+   whole kill+resume — no re-investigation, exactly as claimed.
+5. Approved using the current (post-resume) `request_id` — both resulting
+   `approval_decision` events (bus + agent) carried that same current id, the
+   rollback executed, checkout-service ended healthy. This is the live
+   version of the exact stale-decision scenario the `request_id` guard exists
+   for, and it worked correctly.
+6. Re-ran the dashboard's real `render()` against this actual 32-event
+   stream (not a synthetic one) — `run_resumed` divider renders correctly,
+   dedup correctly collapsed the duplicate `approval_decision` pair, delta
+   card/sparklines/timer all correct, zero thrown errors.
+**This demo beat is ready to record as-is.**
 
 ## Files touched this session
 - `approval_server.py` — `request_id` storage/echo fix (B3.2/B3.5).
