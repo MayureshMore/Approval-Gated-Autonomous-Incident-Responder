@@ -235,7 +235,7 @@ mid-demo to show there is nothing up our sleeve.
 ## If you are resuming cold
 1. `.venv/bin/python run_agent.py --selftest` → `PASS` with the mock env up, or
    `OK (wiring verified)` with it down. Only `FAIL` means the build is wrong.
-2. `.venv/bin/python -m pytest` → expect **179 passed**.
+2. `.venv/bin/python -m pytest` → expect **201 passed**.
 3. Do a full dashboard run (commands at the top). If that is green, the demo is safe.
 4. Then: A2 live (needs gateway onboarding) or A6 live (needs `gh` + a repo).
 
@@ -368,7 +368,7 @@ Ran the whole stack as a tester, not as the author: live servers, real runs,
 adversarial probes. Everything below was executed, not inferred from the code.
 
 **Green:**
-- `188 passed`
+- `201 passed`
 - `--selftest` PASS with the servers up
 - sim run: 8 steps, correlation 0.76, service healthy
 - **live TrueFoundry runs x5**: 0.76 every time, real rationale on every card,
@@ -383,7 +383,7 @@ adversarial probes. Everything below was executed, not inferred from the code.
   Ctrl-C cleans up with nothing left on :8000 / :8500
 - every test name cited in this document actually exists (checked mechanically)
 
-### Five bugs found and fixed
+### Six bugs found and fixed
 
 **1. The approval card said "no rationale given" on every live run.** *(demo-fatal)*
 The rationale was only ever the prose in the same turn as the tool call, and
@@ -395,7 +395,7 @@ Fixed structurally: `reason` is a required parameter on every gated tool
 agent said -> the sandbox verdict) so the card is never blank even if a model
 ignores it. Commit `5d78ebe`.
 
-**2. The sandbox could read any file on the machine.** *(worst of the five)*
+**2. The sandbox could read any file on the machine.** *(worst of the six)*
 It blocked sockets, subprocesses and dangerous imports — but nothing stopped
 `open('<repo>/.env').read()`. A snippet could hand the live TrueFoundry key back
 in its own result, and write anywhere on disk too. Verified by doing it: it
@@ -420,7 +420,13 @@ to match. **Do not claim a memory cap on stage.**
 as success and sends the model on with no evidence. Now returns a hint naming
 the exact mistake.
 
-**5. Sandbox errors were unactionable.** `TypeError: list indices must be
+**5. The timeline had no scroll container.** `#timeline` had no height or
+overflow rule, so `tl.scrollTop = tl.scrollHeight` was dead code and the card
+grew without limit — on a full run the approval buttons were pushed off-screen
+at the moment the operator needed them. Fixed, along with a navigation and
+interactivity pass on the dashboard; details in the Zeel section below.
+
+**6. Sandbox errors were unactionable.** `TypeError: list indices must be
 integers or slices, not str`, no line number, thrown when the model reached into
 PAYLOAD with the subagent-findings shape. It burned a whole extra sandbox
 round-trip every live run. Errors now name the failing line, show its source,
@@ -439,9 +445,53 @@ and dump the real PAYLOAD keys and types.
   harmless — the diagnostics helpers do not need it — but the message is
   confusing if you hit it. Use `open()` and `os.path`.
 
-### Touched `ui/dashboard.html` again — Zeel's file, flag it to her
+### `ui/dashboard.html` — Zeel, read this bit
 
-`.reason` needed `white-space:pre-wrap`, `overflow-wrap:anywhere` and a
-`max-height` with scroll. Rationales are longer and can be multi-line now;
-without it they collapse onto one line or overflow the panel. This is the third
-time I have edited her file — the other two are in section 9.
+I did a navigation and interactivity pass on your file. Everything you built is
+intact; nothing was rewritten for the sake of it. Revert any of it freely — but
+please keep the first item, it is a real bug.
+
+**The bug.** `#timeline` had no height or overflow rule at all, so
+`tl.scrollTop = tl.scrollHeight` at the end of `render()` was dead code and the
+timeline grew without limit. On a full run (~25 events) the card pushed the
+approval buttons off the bottom of the screen — the operator had to scroll up to
+find them, at the exact moment the demo depends on clicking them. It is now a
+`58vh` scroll container.
+
+**Then, because it now scrolls, it had to stop fighting the operator:**
+- **Renders only when the content changed.** It rebuilt `innerHTML` on every
+  1.2s poll, which destroyed text selection and yanked scroll position back to
+  the bottom. A row signature is compared first, so an idle dashboard is
+  completely stable to read from.
+- **Auto-scroll only when already at the bottom.** Scroll up to read something
+  and it holds your place; a `↓ N new` pill appears and takes you back.
+- **Filter chips** — All / Agent / Tools / Sandbox / Approvals / Subagents, with
+  live counts. Pure CSS off one `data-filter` attribute, so filtering never
+  re-renders and never disturbs scroll or selection.
+- **Keyboard**: `A` approve, `R` reject, `1`-`6` filters, `Esc` all, `J` jump to
+  latest. The a/r shortcuts sit behind a `pendingKey` guard so a stray keypress
+  between runs cannot authorise anything — `test_keyboard_cannot_approve_when
+  _no_gate_is_open` pins that, and it fails if the guard moves.
+- **`show full` disclosures** on long tool results and subagent findings, with
+  open ones surviving a re-render.
+- **Sticky approval card** and an offline banner after two failed polls, so a
+  stale dashboard never looks live.
+- `.reason` got `pre-wrap` + `overflow-wrap:anywhere` + `max-height`, because
+  rationales are multi-line now (core.py's fallback chain).
+- Fixed a latent escaping bug: `escapeHtml(json).slice(0,180)` truncated *after*
+  escaping, which can cut an entity in half (`&am`) and render as literal
+  garbage. It clips first now.
+
+**`tests/test_dashboard.py` is new — 13 tests, no browser needed.** The ones
+that matter to you: every event kind must have an icon, a filter group, and a
+renderer, so adding a kind without wiring it up is a red build rather than an
+invisible row. Plus: no unescaped interpolation reaches `innerHTML`, the
+rationale is set with `textContent`, and the page stays a single self-contained
+file. All five were mutation-tested — I broke each one deliberately and
+confirmed the suite caught it.
+
+Verified against a real captured event stream (pending gate, completed run, and
+a live gateway run) plus 12 deliberately hostile events with `<script>` and
+`<img onerror>` in every field: zero injections survived.
+
+This is the third time I have edited your file — the other two are in section 9.
