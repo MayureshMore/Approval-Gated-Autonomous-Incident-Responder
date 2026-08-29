@@ -20,15 +20,28 @@ touches this one; most of it is now addressed (see B3 below).
   `EVENT_CONTRACT.md` addendum. `ui/dashboard.html` stays on Zeel's version
   (superset of remote — remote hasn't touched it). `.gitignore` = Person A's
   version + one added `*.log` line.
-- **Committed and pushed as of this session.** Commit `fd656a1` ("Dashboard:
-  render subagent/sandbox/resume events, fix approval request_id round-trip")
-  is on `origin/master`, confirmed via `git fetch` + rev-parse equality after
-  Zeel's push. Working tree is fully clean — nothing pending.
-  Before starting new work in a future session: `git fetch origin && git log
-  origin/master -5` to check whether Person A has pushed again, and re-sync
-  (see this session's transcript for the `--mixed` reset + per-file
-  `git show origin/master:<path> > <path>` pattern) before making further
-  changes.
+- Synced with Person A's work through `aa3dc9e` (PR #4, the blog), which
+  includes the `Makefile`, `scripts/demo.sh`, `BLOG.md`, `LICENSE` and his two
+  fixes to `ui/dashboard.html` (XSS escaping, approval card after a reset).
+
+### ⚠️ `git push` on its own does nothing here — use `git push -u origin master`
+Local `master` has **no upstream configured** (`git config --get-regexp
+'^branch\.master'` returns nothing), so a bare `git push` can report
+*"Everything up-to-date"* while leaving every local commit unpushed. This is a
+leftover from wiring the repo with `git reset --mixed origin/master`, which
+moves the branch pointer but never sets tracking.
+
+**Push with `git push -u origin master`** — the `-u` sets the upstream once and
+plain `git push` behaves normally afterwards. To confirm a push actually landed:
+
+```bash
+git fetch origin && git log --oneline origin/master..HEAD    # empty == pushed
+```
+
+Before starting new work in a future session: `git fetch origin && git log
+origin/master -5` to check whether Person A has pushed again, and re-sync (see
+this session's transcript for the `--mixed` reset + per-file
+`git show origin/master:<path> > <path>` pattern) before making further changes.
 
 ## Environment notes (session-specific — may not apply elsewhere)
 - Windows machine. `python` alias is NOT on PATH (opens MS Store); use `py`.
@@ -195,6 +208,21 @@ touches this one; most of it is now addressed (see B3 below).
 Set the project up from scratch in a fresh `.venv` on Windows/Python 3.13 and
 tested it as an outsider would. Suite went **136 → 150 passing**. Five real
 defects found and fixed; everything below was reproduced before being changed.
+
+### What was fixed, at a glance
+| # | Fix | Severity | Where | Commit |
+|---|---|---|---|---|
+| 1 | Approval gate failed **open** across runs — a second run executed a rollback with no human, logged as `by:"human"` | **critical** | `approval_server.py` | `835f5b6` |
+| 2 | Dashboard stuck on INVESTIGATING after a rejected run | demo-visible | `ui/dashboard.html` | `d392103` |
+| 3 | "Resolved" banner leaked into the next run after `/reset` | demo-visible | `ui/dashboard.html` | `d392103` |
+| 4 | Environment healed on **any** rollback version, incl. the bad one | correctness | `mock_env/main.py` | `3c0b8e0` |
+| 5 | `scripts/demo.sh` unrunnable in Windows/WSL clones (CRLF) | portability | `.gitattributes` | `96e99a6` |
+| + | Bus returned HTTP 500 on bad JSON; accepted a decision with no `action` | robustness | `approval_server.py` | `835f5b6` |
+
+Tests added: `tests/test_approval_server.py` (11, incl. the fail-open
+regression — confirmed to fail against the pre-fix code), 3 in
+`tests/test_contracts.py`, and 2 in `tests/test_demo_script.py` made
+cross-platform.
 
 ### 1. Approval gate failed OPEN across runs — *the most serious finding*
 Approve a rollback, then start a second run **without** resetting the bus, and
