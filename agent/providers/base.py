@@ -4,7 +4,7 @@ Provider interface.
 The agent loop in core.py is provider-agnostic: it speaks only in ToolCall and
 AssistantTurn. Each provider translates that to and from one API dialect.
 
-Why this exists: the primary runtime is the TrueForge harness, but a hackathon
+Why this exists: the primary runtime is the TrueFoundry harness, but a hackathon
 demo cannot hang on one vendor being reachable at 17:55. Porting to a new runtime
 means writing one class here, not touching the loop, the gate or the sandbox.
 """

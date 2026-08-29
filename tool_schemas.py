@@ -2,7 +2,7 @@
 OpenAI-style tool/function definitions matching tools.py.
 
 Use directly with the OpenAI API (fallback_agent.py) OR as the reference when
-registering tools in the TrueForge harness. Keep in sync with tools.py.
+registering tools in the TrueFoundry harness. Keep in sync with tools.py.
 """
 
 TOOL_SCHEMAS = [
