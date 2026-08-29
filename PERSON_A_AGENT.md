@@ -4,11 +4,10 @@
 > session runs out of context or usage you can open a fresh one, paste
 > *"Read PERSON_A_AGENT.md and continue"*, and lose nothing.
 >
-> **Status: 113 tests passing. Layers 0, 1 and 4 plus subagents demo end-to-end
-> today with no API key.** The TrueFoundry gateway provider is code-complete and
-> the key authenticates — but **the account has no models provisioned**, which is
-> a dashboard step (see A2). Layer 2 (real GitHub PR) is built and tested, not yet
-> fired live.
+> **Status: 113 tests passing. A2 IS LIVE — a full incident response ran on
+> GPT-4o through the TrueFoundry gateway, end to end, and recovered the service.**
+> Layers 0, 1 and 4 plus subagents also demo with no API key at all. Layer 2 (real
+> GitHub PR) is built and tested, not yet fired live.
 > _Last updated: 2026-08-29._
 
 ## Mission
@@ -48,9 +47,15 @@ automatically; existing env vars still win. Never paste a key into chat or a
 command line. `--selftest` prints config with secrets masked (`tfy_…8316 (70 chars)`).
 
 ### Providers
-`truefoundry` (primary), `sim` (no key, deterministic — the demo safety net),
-`openai`, `anthropic`. Same loop, same gate, same sandbox for all four; only token
-generation differs.
+`truefoundry` (primary, **live on `ms-openai-main/gpt-4o`**), `sim` (no key,
+deterministic — the demo safety net), `openai`, `anthropic`. Same loop, same gate,
+same sandbox for all four; only token generation differs.
+
+```bash
+# the live demo, on a real model through the gateway
+AGENT_BUS_URL=http://localhost:8500 .venv/bin/python run_agent.py \
+    --provider truefoundry --subagents
+```
 
 ---
 
@@ -130,28 +135,28 @@ mid-demo to show there is nothing up our sleeve.
 
 - [x] **A1 — Prove the loop.** Done, and generalised: `run_agent.py` beats the
       original `fallback_agent.py` (structured events, run report, preflight).
-- [~] **A2 — TrueFoundry gateway.** Code complete, 15 tests. **The key
-      authenticates but the account exposes zero models.**
-      - Symptom: `GET /api/llm/models` → `{"data":[]}`; every completion → 403
-        *"User m_more1@u.pacific.edu is not authorized to access model X or model
-        does not exist"*.
-      - **This is a dashboard step, not a code bug.** Go to
-        https://pacific.truefoundry.cloud/gateway-onboarding and add a provider
-        account (e.g. OpenAI, using an OpenAI key) so the gateway has a model to
-        route to. Then:
-        ```bash
-        .venv/bin/python run_agent.py --list-models        # must be non-empty
-        # put a real id in .env as TRUEFOUNDRY_MODEL, e.g. openai-main/gpt-4o
-        .venv/bin/python run_agent.py --provider truefoundry --selftest   # expect PASS
+- [x] **A2 — TrueFoundry gateway. LIVE AND VERIFIED.** A full incident response
+      ran on GPT-4o through the gateway and recovered the service.
+      - **Verified config** (already in `.env`):
         ```
-      - Model ids are `{provider-account}/{model}` — **bare `gpt-4o` 404s.** The
-        preflight validates the configured id against the gateway's own list and
-        refuses to start on a mismatch, so this surfaces before the demo.
+        TRUEFOUNDRY_BASE_URL=https://pacific.truefoundry.cloud/api/llm
+        TRUEFOUNDRY_MODEL=ms-openai-main/gpt-4o
+        ```
+        `https://gateway.truefoundry.ai` also works and returns the same two
+        models; ours is kept because it is the one we have run against.
+      - **The `ms-` prefix is not optional.** Ids are `ms-openai-main/gpt-4o` and
+        `ms-openai-main/gpt-4o-mini`. `openai-main/gpt-4o` and bare `gpt-4o` both
+        403. Preflight validates the id against the gateway's own list and refuses
+        to start on a mismatch, so this cannot bite you on stage.
       - Every call sends `X-TFY-METADATA` tagging the run id, so a dashboard run
         traces to its cost and latency in TrueFoundry's observability.
-      - **If onboarding can't be completed in time:** demo with `--provider sim`.
-        It drives the real gate, real sandbox and real environment; only token
-        generation is scripted. Nothing about the safety story is weakened.
+      - `--model ms-openai-main/gpt-4o-mini` overrides per run (cheaper rehearsals).
+      - **The earlier 403 was an unprovisioned account**, fixed by adding the
+        `ms-openai-main` provider account in the dashboard. Preflight now names
+        that failure explicitly if it recurs.
+      - **Fallback stays valid:** `--provider sim` needs no key and drives the real
+        gate, sandbox and environment. If the gateway wobbles mid-demo, switch
+        providers and nothing about the safety story is weakened.
 - [x] **A3 — Approval gate.** Emits `awaiting_approval`, blocks, polls, resumes.
       Request-ids stop a stale decision approving a later action.
 - [x] **A4 — Sandbox (Layer 1).** Real process isolation, not a claim.
@@ -221,14 +226,13 @@ The project now sits at the **repo root** (not nested in `incident-responder/`),
 If you have a local repo pointing at the same remote with a different layout, our
 histories will disagree about where every file lives. **Sync with me before pushing.**
 
-## 2. One-line fix I need from you (visible in the demo)
-`approval_server.py` appends its **own** `approval_decision` event in `POST
-/decision`, and my gate emits one too — so the timeline renders **two "approved"
-rows per approval**. Harmless, but it looks sloppy on stage. It is your file, so I
-have not touched it. Either drop the server-side append, or dedupe by `request_id`
-in the dashboard.
+## 2. ~~Duplicate approval_decision~~ — DONE (fd656a1), verified
+You fixed it by round-tripping `request_id` through `POST /decision` and deduping
+on `e.request_id||e.action` in the dashboard. I ran my agent against your updated
+`approval_server.py` end to end: both decision events now carry the same
+`request_id`, so they collapse to one row. Nothing further needed.
 
-## 3. New events — two are worth rendering
+## 3. New events — you already render these (fd656a1). Kept here as the reference.
 All additive; the dashboard may ignore any of them without breaking.
 
 ```
@@ -265,21 +269,53 @@ this land:
 
 If the dashboard wipes state on a polling gap, this demo dies. Worth checking.
 
-## 5. Small ask for the bus
-Have `GET /decision` echo back the `request_id` it was passed. The agent already
-sends it and tolerates its absence, so nothing breaks today — it just closes a
-stale-approval edge case if one run ever gates two actions.
+## 5. ~~Echo request_id from GET /decision~~ — DONE (fd656a1)
+Confirmed working against my gate.
 
 ## 6. What I did NOT touch
 `mock_env/`, `approval_server.py`, `ui/dashboard.html`, `DEMO_SCRIPT.md` are
 untouched and still yours. I only added a contract addendum to `EVENT_CONTRACT.md`.
 
 ## 7. Your critical path, given where I am
+- **B6 (record the demo twice) is now the top priority.** The gateway is live and
+  the whole loop is green *right now* — capture it while it is. Record the real
+  one (`--provider truefoundry --subagents`) and a `--provider sim` one as
+  insurance; sim needs no API key, so it can never be blocked by the gateway.
 - **B5 (Qodo) is the cheapest track we have and it is not started.** Nearly free
   points; do not skip it.
-- **B2 (dashboard polish)** — the `sandbox_exec` box is the highest-value single
-  addition.
-- **B6 (record the demo twice)** — do this *before* chasing polish. We have a
-  working end-to-end run right now; capture it while it is green. `--provider sim`
-  needs no API key, so a recording can be made at any time without depending on the
-  gateway.
+- **Layer 4 beat** — worth adding to the recording: kill the agent at the approval
+  card, `--resume last`, watch it continue in the same timeline. Ten seconds, and
+  it is a harness feature nobody else will have.
+
+## 8. Verified for you — Layer 4 renders correctly (your open item #4)
+Ran it end to end against your dashboard: run reaches the card, agent killed at
+the gate, `--list-runs` shows `step=6 pending=['rollback_service']`, `--resume last`
+continues, approval round-trips, service recovers. One `run_id` across the whole
+stream so it is a single timeline, `run_resumed` renders once, and the two raw
+`approval_decision` events dedupe to one row. Nothing needed from you here.
+
+## 9. Two bugs I fixed in ui/dashboard.html — flagging because it is your file
+Both were demo-path, both proven with a reproduction before changing anything.
+
+1. **Approval card never reappeared on a second run.** `decided` was module-level
+   and never cleared, so after one approval `!decided.has(action)` stayed false
+   forever in that browser tab. `DEMO_SCRIPT.md` says to `/reset` before every
+   run — so rehearsing once meant the real take had **no approval card at all**.
+   Fixed by deriving `decided` from the event log each render and keeping a
+   separate `optimistic` set (keyed by `request_id`) for the instant hide on
+   click, cleared whenever a new run starts. Verified with two consecutive live
+   runs and a `/reset` between them.
+2. **Model-controlled text was interpolated into HTML unescaped** (`fmtArgs`,
+   `e.tool`). The agent WRITES the diagnostic code, so `if n<len(deploys):` made
+   the parser swallow the rest of the row, and a model-chosen `to_version` was a
+   live XSS path. Escaped every model-controlled interpolation and widened
+   `escapeHtml` to cover quotes.
+
+## 10. Live gateway config (if you want to run the real agent yourself)
+Working, verified. Put your own PAT in `.env` (gitignored):
+```
+TRUEFOUNDRY_API_KEY=<your PAT>
+TRUEFOUNDRY_BASE_URL=https://pacific.truefoundry.cloud/api/llm
+TRUEFOUNDRY_MODEL=ms-openai-main/gpt-4o
+```
+The `ms-` prefix is required. `--provider sim` still needs no key at all.
