@@ -83,7 +83,7 @@ Unchanged from the original scaffold: `tools.py`, `tool_schemas.py`,
 
 ---
 
-## The five claims, and the test that proves each
+## The six claims, and the test that proves each
 
 Say these on stage; every one is checkable, not asserted.
 
@@ -91,9 +91,16 @@ Say these on stage; every one is checkable, not asserted.
    `test_no_destructive_call_without_a_prior_approval` walks the event stream and
    fails if a destructive `tool_call` ever precedes its `approval_decision`.
 2. **"The diagnostic runs in a real sandbox."**
-   `tests/test_sandbox.py` — 15 tests. Network blocked, subprocess blocked, repo
-   invisible (`os.listdir()` sees only `diagnostics.py`), API keys absent from the
-   env, infinite loop killed, 4 GB allocation dies in the child not the parent.
+   `tests/test_sandbox.py` — 32 tests. Separate process, scrubbed env, network
+   blocked, subprocesses blocked, **filesystem confined to the working
+   directory** (it cannot read the repo, `/etc/passwd`, or the `.env` holding
+   the gateway key, and cannot write anywhere else), infinite loop killed by the
+   CPU cap.
+   **Say this precisely.** The memory cap is NOT part of the claim on a Mac:
+   macOS rejects `RLIMIT_AS`, `RLIMIT_DATA` and `RLIMIT_RSS` alike, so a 4 GB
+   allocation goes straight through. What protects us is process isolation plus
+   the wall-clock kill — the parent survives regardless. Claiming a memory limit
+   in front of a judge who knows macOS would cost more than it buys.
 3. **"It fails closed."**
    Timeout, dead bus, Ctrl-C, non-tty — every one denies. `tests/test_approval.py`.
 4. **"A rejection is respected."**
@@ -103,6 +110,13 @@ Say these on stage; every one is checkable, not asserted.
    `test_resume_still_asks_before_the_destructive_action` re-runs the invariant on
    a resumed run. `test_resume_honours_a_rejection_from_before_the_crash` proves you
    cannot turn a "no" into a "yes" by killing the process and retrying.
+6. **"The human is never asked to approve something the agent has not explained."**
+   `reason` is a required parameter on every gated tool, and if a model omits it
+   anyway the card falls back to the evidence on record. Proved by
+   `test_silent_destructive_call_still_gets_an_explained_card`,
+   `test_every_gated_tool_demands_a_reason` and
+   `test_a_model_that_omits_reason_entirely_does_not_crash`.
+   This claim was FALSE on the live gateway until 5d78ebe — see section 11.
 
 The correlation score in `DEMO_SCRIPT.md` (**0.76**) is pinned by
 `test_demo_scenario_scores_high`. Change the scenario timings and that test tells
@@ -350,51 +364,84 @@ The `ms-` prefix is required. `--provider sim` still needs no key at all.
 
 ## 11. Full tester pass — what I ran and what it found
 
-Ran the whole stack as a tester, not as the author. Everything below was
-executed against live servers, not asserted from reading the code.
+Ran the whole stack as a tester, not as the author: live servers, real runs,
+adversarial probes. Everything below was executed, not inferred from the code.
 
 **Green:**
-- `179 passed`
-- `--selftest` PASS with servers up
+- `188 passed`
+- `--selftest` PASS with the servers up
 - sim run: 8 steps, correlation 0.76, service healthy
-- **live TrueFoundry run x3**: 4 steps, one sandbox run, 0.76 every time
-- approve through the dashboard API -> rollback runs, service healthy
-- **deny** -> zero destructive calls, service stays degraded, agent stands down
+- **live TrueFoundry runs x5**: 0.76 every time, real rationale on every card,
+  service healthy on v1.4.1
+- approve through the dashboard API -> rollback runs, service recovers
+- **deny** -> zero destructive calls, prod stays degraded, the agent stands down
   without retrying or substituting another action
-- kill -9 mid-approval -> `--resume` continues at step 6, same run_id, the
-  pending rollback is re-gated (not auto-executed), timeline replays without
+- `kill -9` mid-approval -> `--resume` continues at step 6, same run_id, the
+  pending rollback is re-gated (NOT auto-executed), timeline replays without
   duplicating (22 -> 24 events)
 - `scripts/demo.sh` -> both servers up, scenario reset, dashboard serves,
-  Ctrl-C cleans up both servers with nothing left on :8000 / :8500
+  Ctrl-C cleans up with nothing left on :8000 / :8500
+- every test name cited in this document actually exists (checked mechanically)
 
-**Three bugs found and fixed:**
+### Five bugs found and fixed
 
-1. **The approval card said "no rationale given" on every live run.** The
-   rationale was only ever the prose in the same turn as the tool call, and
-   gpt-4o fires `rollback_service` with an empty text field. The card — the one
-   thing a human reads before authorising a production rollback — was blank on
-   the real path and only looked right in sim. Fixed structurally: `reason` is
-   now a required parameter on every gated tool, plus a fallback chain (last
-   thing the agent said -> the sandbox verdict) so the card is never blank even
-   if a model ignores it. Verified over three live runs.
-2. **`result = ...` silently returned nothing.** The sandbox reads `RESULT`; a
-   lowercase assignment gave back `ok: true, result: null`, which reads as
-   success and sends the model on with no evidence. Now returns a hint naming
-   the exact mistake.
-3. **Sandbox errors were unactionable.** `TypeError: list indices must be
-   integers or slices, not str` with no line number, thrown when the model
-   reached into PAYLOAD with the subagent-findings shape. It burned a whole
-   extra sandbox round-trip recovering. Errors now name the failing line, show
-   its source, and dump the real PAYLOAD keys and types.
+**1. The approval card said "no rationale given" on every live run.** *(demo-fatal)*
+The rationale was only ever the prose in the same turn as the tool call, and
+gpt-4o fires `rollback_service` with an empty text field. The one thing a human
+reads before authorising a production rollback was blank on the real path — and
+it looked fine in sim, because the scripted provider always narrates.
+Fixed structurally: `reason` is a required parameter on every gated tool
+(`agent/registry.py`, `_with_reason`), plus a fallback chain (last thing the
+agent said -> the sandbox verdict) so the card is never blank even if a model
+ignores it. Commit `5d78ebe`.
 
-**Not a bug, so nobody re-derives it:** `scripts/demo.sh` looks like it leaks
-uvicorn on Ctrl-C when you launch it with `nohup ... &`. It does not. Bash
-ignores SIGINT in background jobs of a non-interactive shell, and a signal
-ignored on entry cannot be trapped — so the INT trap never fires. Under a normal
-foreground Ctrl-C the cleanup is correct; verified by resetting the disposition
-(`perl -e '$SIG{INT}="DEFAULT"; exec @ARGV' scripts/demo.sh`) and sending SIGINT.
+**2. The sandbox could read any file on the machine.** *(worst of the five)*
+It blocked sockets, subprocesses and dangerous imports — but nothing stopped
+`open('<repo>/.env').read()`. A snippet could hand the live TrueFoundry key back
+in its own result, and write anywhere on disk too. Verified by doing it: it
+leaked the real key. Scrubbing the environment is not enough when the secrets
+are also on disk. `sandbox/bootstrap.py` now confines every path-opening entry
+point — `builtins.open`, `io.open`, `io.FileIO`, and the `os` file functions —
+to the sandbox working directory. The stdlib still imports normally because
+importlib captured its own `_io` references at interpreter start; that is
+asserted, not assumed (`test_stdlib_imports_still_work_under_confinement`).
+**If a judge probes one thing, it is this.** It is now nine tests.
 
-**Touched `ui/dashboard.html` again (Zeel's file):** `.reason` needed
-`white-space:pre-wrap` + `overflow-wrap:anywhere` + a `max-height` — rationales
-are longer and can be multi-line now, and without it they collapse onto one line
-or overflow the panel.
+**3. `test_memory_bomb_does_not_take_down_the_parent` passed for the wrong reason.**
+It asserted `not res["ok"]` on a 4 GB allocation. The allocation *succeeds* on
+macOS — the run only "failed" because a bytearray is not JSON serialisable, so
+the test would have passed with no limits whatsoever. macOS rejects every memory
+rlimit there is. The test now asserts what actually holds everywhere (the parent
+survives and stays usable) and the claim in section "six claims" was corrected
+to match. **Do not claim a memory cap on stage.**
+
+**4. `result = ...` silently returned nothing.** The sandbox reads uppercase
+`RESULT`; a lowercase assignment gave back `ok: true, result: null`, which reads
+as success and sends the model on with no evidence. Now returns a hint naming
+the exact mistake.
+
+**5. Sandbox errors were unactionable.** `TypeError: list indices must be
+integers or slices, not str`, no line number, thrown when the model reached into
+PAYLOAD with the subagent-findings shape. It burned a whole extra sandbox
+round-trip every live run. Errors now name the failing line, show its source,
+and dump the real PAYLOAD keys and types.
+
+### Two things that are NOT bugs, so nobody re-derives them
+
+- **`scripts/demo.sh` looks like it leaks uvicorn on Ctrl-C — it does not.** It
+  only appears to when launched with `nohup ... &`: bash ignores SIGINT in
+  background jobs of a non-interactive shell, and a signal ignored on entry
+  cannot be trapped, so the INT trap never fires. Under a normal foreground
+  Ctrl-C the cleanup is correct. Verified by restoring the disposition:
+  `perl -e '$SIG{INT}="DEFAULT"; exec @ARGV' scripts/demo.sh`.
+- **`pathlib` is unusable inside the sandbox.** It imports `urllib`, which is on
+  the denylist, so the error reads `'urllib' is not importable`. Pre-existing and
+  harmless — the diagnostics helpers do not need it — but the message is
+  confusing if you hit it. Use `open()` and `os.path`.
+
+### Touched `ui/dashboard.html` again — Zeel's file, flag it to her
+
+`.reason` needed `white-space:pre-wrap`, `overflow-wrap:anywhere` and a
+`max-height` with scroll. Rationales are longer and can be multi-line now;
+without it they collapse onto one line or overflow the panel. This is the third
+time I have edited her file — the other two are in section 9.
