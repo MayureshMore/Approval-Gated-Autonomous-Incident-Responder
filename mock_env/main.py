@@ -168,6 +168,25 @@ def rollback(req: RollbackReq):
     if not v:
         return {"ok": False, "error": f"unknown service '{req.service}'"}
     from_version = v["version"]
+
+    # A rollback only helps if it actually targets a known-good earlier release.
+    # Without these two checks the environment heals on ANY version string — it
+    # would report "healthy" for a rollback to a version that never existed, or
+    # to the bad deploy itself — which quietly rewards a wrong diagnosis and
+    # undercuts the point of the scenario (a restart already cannot fix it; the
+    # *version* has to be right too).
+    known = {d["version"] for d in STATE["deploys"].get(req.service, [])}
+    if req.to_version not in known:
+        return {"ok": False, "service": req.service, "from_version": from_version,
+                "to_version": req.to_version,
+                "message": (f"No deploy of {req.service} at version {req.to_version} — "
+                            f"known versions are {', '.join(sorted(known))}. Nothing changed.")}
+    if req.to_version == from_version:
+        return {"ok": False, "service": req.service, "from_version": from_version,
+                "to_version": req.to_version,
+                "message": (f"{req.service} is already running {req.to_version}; rolling back to "
+                            "the version that is already deployed changes nothing.")}
+
     _recover(req.service, req.to_version)
     # mark deploy history
     for d in STATE["deploys"].get(req.service, []):

@@ -20,15 +20,28 @@ touches this one; most of it is now addressed (see B3 below).
   `EVENT_CONTRACT.md` addendum. `ui/dashboard.html` stays on Zeel's version
   (superset of remote — remote hasn't touched it). `.gitignore` = Person A's
   version + one added `*.log` line.
-- **Committed and pushed as of this session.** Commit `fd656a1` ("Dashboard:
-  render subagent/sandbox/resume events, fix approval request_id round-trip")
-  is on `origin/master`, confirmed via `git fetch` + rev-parse equality after
-  Zeel's push. Working tree is fully clean — nothing pending.
-  Before starting new work in a future session: `git fetch origin && git log
-  origin/master -5` to check whether Person A has pushed again, and re-sync
-  (see this session's transcript for the `--mixed` reset + per-file
-  `git show origin/master:<path> > <path>` pattern) before making further
-  changes.
+- Synced with Person A's work through `aa3dc9e` (PR #4, the blog), which
+  includes the `Makefile`, `scripts/demo.sh`, `BLOG.md`, `LICENSE` and his two
+  fixes to `ui/dashboard.html` (XSS escaping, approval card after a reset).
+
+### ⚠️ `git push` on its own does nothing here — use `git push -u origin master`
+Local `master` has **no upstream configured** (`git config --get-regexp
+'^branch\.master'` returns nothing), so a bare `git push` can report
+*"Everything up-to-date"* while leaving every local commit unpushed. This is a
+leftover from wiring the repo with `git reset --mixed origin/master`, which
+moves the branch pointer but never sets tracking.
+
+**Push with `git push -u origin master`** — the `-u` sets the upstream once and
+plain `git push` behaves normally afterwards. To confirm a push actually landed:
+
+```bash
+git fetch origin && git log --oneline origin/master..HEAD    # empty == pushed
+```
+
+Before starting new work in a future session: `git fetch origin && git log
+origin/master -5` to check whether Person A has pushed again, and re-sync (see
+this session's transcript for the `--mixed` reset + per-file
+`git show origin/master:<path> > <path>` pattern) before making further changes.
 
 ## Environment notes (session-specific — may not apply elsewhere)
 - Windows machine. `python` alias is NOT on PATH (opens MS Store); use `py`.
@@ -190,6 +203,115 @@ touches this one; most of it is now addressed (see B3 below).
 
 - **B7 — Blog: NOT STARTED.**
 
+## QA pass — clean setup + adversarial testing (2026-08-29)
+
+Set the project up from scratch in a fresh `.venv` on Windows/Python 3.13 and
+tested it as an outsider would. Suite went **136 → 150 passing**. Five real
+defects found and fixed; everything below was reproduced before being changed.
+
+### What was fixed, at a glance
+| # | Fix | Severity | Where | Commit |
+|---|---|---|---|---|
+| 1 | Approval gate failed **open** across runs — a second run executed a rollback with no human, logged as `by:"human"` | **critical** | `approval_server.py` | `835f5b6` |
+| 2 | Dashboard stuck on INVESTIGATING after a rejected run | demo-visible | `ui/dashboard.html` | `d392103` |
+| 3 | "Resolved" banner leaked into the next run after `/reset` | demo-visible | `ui/dashboard.html` | `d392103` |
+| 4 | Environment healed on **any** rollback version, incl. the bad one | correctness | `mock_env/main.py` | `3c0b8e0` |
+| 5 | `scripts/demo.sh` unrunnable in Windows/WSL clones (CRLF) | portability | `.gitattributes` | `96e99a6` |
+| + | Bus returned HTTP 500 on bad JSON; accepted a decision with no `action` | robustness | `approval_server.py` | `835f5b6` |
+
+Tests added: `tests/test_approval_server.py` (11, incl. the fail-open
+regression — confirmed to fail against the pre-fix code), 3 in
+`tests/test_contracts.py`, and 2 in `tests/test_demo_script.py` made
+cross-platform.
+
+### 1. Approval gate failed OPEN across runs — *the most serious finding*
+Approve a rollback, then start a second run **without** resetting the bus, and
+the new run executed the rollback **with nobody at the keyboard**, recording
+`by: "human"` for a decision no human made. Directly contradicts the project's
+headline claim. Reproduced end to end, twice.
+
+*Cause:* `GET /decision` matched on **action name only**. Action names are not
+unique across runs, so the previous run's approval satisfied the new run's gate.
+The agent does carry a stale-id guard (`ApprovalGate._seen`), but that set lives
+in process memory and is empty in a freshly started process — so the check had
+to move to the bus to be worth anything.
+
+*Fix:* `approval_server.py` now only hands a decision back to the gate it was
+actually made for (matching on `request_id`). Callers that send no id (the older
+`fallback_agent.py` loop) are answered as before. Re-ran the exact scenario: the
+second run now pauses and waits, production untouched. Locked down by
+`tests/test_approval_server.py::test_a_decision_is_not_reused_by_a_later_gate` —
+verified it **fails** against the old code, so it is a real regression test.
+
+### 2. Dashboard stuck on "INVESTIGATING" after a rejected run
+The only terminal-status branch required `status === "healthy"`, so a rejected
+run — one of the five headline claims — left the badge reading INVESTIGATING
+forever while the agent had already stood down. Now shows **STOOD DOWN** with an
+explanation that production was deliberately left untouched, plus a neutral
+FINISHED state for any other ending.
+
+### 3. "Resolved" banner leaked across runs
+`resolved` had `.show` added but never removed, so after a `/reset` the previous
+run's green "✓ Resolved" banner stayed on screen while the next run was still
+investigating. Same stale-state family as the approval-card bug Mayuresh fixed
+in section 9 of `PERSON_A_AGENT.md`; the banner is now set explicitly on every
+render. Verified with two consecutive runs and a reset between them.
+
+### 4. The environment rewarded a *wrong* rollback
+`test_restart_does_not_fix_a_bad_deploy` guards the choice of **tool**, but
+nothing guarded the choice of **version**: `/rollback` healed the service for any
+string at all. Rolling back to `v9.9.9-never-shipped`, or to the bad deploy
+`v1.4.2` itself, both reported **healthy** — quietly rewarding a wrong diagnosis
+and hollowing out "the scenario forces real reasoning". `mock_env` now only heals
+on a version that exists in deploy history and differs from the running one, and
+returns an actionable message otherwise. Three tests added to
+`tests/test_contracts.py`. The demo path (`v1.4.1`) is unchanged.
+
+### 5. `scripts/demo.sh` was broken in any Windows/WSL clone
+Git for Windows defaults to `core.autocrlf=true`, so the launcher checked out
+with CRLF, and bash cannot parse a CRLF script (`syntax error near unexpected
+token $'do\r'`). Proved it with a fresh `git clone`. Added `.gitattributes`
+pinning `*.sh` and `Makefile` to LF. macOS/Linux were never affected — which is
+exactly why it went unnoticed.
+
+Also hardened `approval_server.py` inputs: malformed JSON returned **HTTP 500**
+(unhandled traceback) and `POST /decision` with no `action` was silently accepted
+and recorded under the key `None`, rendering as an approval belonging to no gate.
+Both now return 400.
+
+### Verified working (no change needed)
+- **Mayuresh's XSS fix holds.** Injected `<img src=x onerror=...>` into every
+  model-controlled field: zero live payloads in the HTML sink, 17 correctly
+  escaped, and the `if n<len(` row-corruption case neutralised.
+- **Rejection path**: production untouched, `destructive_executed: []`, agent
+  explicitly stands down.
+- **Layer 4 resume works on Windows**: killed at the gate, `--list-runs` showed
+  `step=6 pending=['rollback_service']`, `--resume last` continued with **zero**
+  re-investigation (1 sandbox run total across kill+resume).
+- **Contract conformance**: every `TOOL_CONTRACT.md` endpoint returns the
+  documented shape; `restart`/`scale` still cannot fix the incident.
+- **`scripts/demo.sh` end to end** (with `MOCK_PORT`/`PYTHON` overrides): starts
+  both servers, resets, runs subagents, pauses, serves the dashboard, accepts the
+  approval, recovers the service. Its port-in-use and `AUTO_APPROVE`-stripping
+  guards both fire correctly.
+- Dashboard survives malformed events without throwing (skips them).
+
+### Open, for Mayuresh — two things I could not settle from here
+1. **Launcher cleanup on Ctrl-C is unverified, not broken.** I could not test the
+   `trap cleanup EXIT INT TERM` honestly on Windows: a backgrounded bash under
+   msys has no controlling terminal, so it never gets a real Ctrl-C, and
+   `Stop-Process -Force` is a hard kill that by design skips traps. Worth a
+   10-second check on the Mac you will demo from: `make demo`, Ctrl-C at the
+   approval card, then `lsof -ti:8000 -ti:8500` should print nothing.
+2. **`SessionStore.save()` checkpoint failures on Windows** — intermittent
+   `[WinError 5] Access is denied` on the `os.replace(tmp, target)`, ~4 times
+   across my runs, 0 in others. The atomic-write pattern is right; on Windows a
+   sync client or AV briefly holding the target makes `os.replace` fail, and this
+   repo lives in a OneDrive folder. It is caught and logged rather than fatal, and
+   resume still worked every time I tested it, so I did **not** patch your file —
+   a short retry around the replace would close it if you think it is worth it.
+   macOS will not hit this.
+
 ## Next steps (in priority order)
 1. **Record the demo (B6)** — script is ready (`DEMO_SCRIPT.md`, includes the
    resume beat), the flow is fully verified twice over. This is the top
@@ -232,6 +354,20 @@ Ran the full sequence Person A documented, for real, end-to-end:
    dedup correctly collapsed the duplicate `approval_decision` pair, delta
    card/sparklines/timer all correct, zero thrown errors.
 **This demo beat is ready to record as-is.**
+
+## Files touched in the QA pass
+- `approval_server.py` — stale-decision fail-open fix (`request_id` matching);
+  400s instead of a 500 / silent `None` key on bad input.
+- `ui/dashboard.html` — STOOD DOWN / FINISHED terminal states; banner no longer
+  leaks across runs.
+- `mock_env/main.py` — `/rollback` only heals on a known, different version.
+- `tests/test_approval_server.py` (new) — 11 tests for the bus, including the
+  fail-open regression.
+- `tests/test_contracts.py` — 3 tests for wrong-version rollbacks.
+- `tests/test_demo_script.py` — exec-bit check now asserts on git's tracked mode
+  (catches "set locally, never committed", which the old check missed) and the
+  bash syntax check runs repo-relative so it works on every platform.
+- `.gitattributes` (new) — pins `*.sh` and `Makefile` to LF.
 
 ## Files touched this session
 - `DEMO_SCRIPT.md` (this pass) — added the exact start command, a subagents

@@ -138,6 +138,35 @@ def test_restart_does_not_fix_a_bad_deploy(env):
     assert m["status"] == "degraded" and m["error_rate"] > 0.1
 
 
+def test_rollback_to_an_unknown_version_does_not_fix_it(env):
+    """
+    Picking the right *tool* is not enough; the version has to be right too.
+    The environment used to heal on any string at all, so a rollback to a
+    release that never existed still reported healthy — rewarding a wrong
+    diagnosis and hollowing out the claim that the scenario forces reasoning.
+    """
+    result = tools.rollback_service("checkout-service", "v9.9.9-never-shipped")
+    assert result["ok"] is False
+    m = tools.get_metrics("checkout-service")
+    assert m["status"] == "degraded" and m["version"] == "v1.4.2"
+
+
+def test_rollback_to_the_bad_version_itself_does_not_fix_it(env):
+    """Rolling back onto the release that caused the incident is a no-op."""
+    result = tools.rollback_service("checkout-service", "v1.4.2")
+    assert result["ok"] is False
+    m = tools.get_metrics("checkout-service")
+    assert m["status"] == "degraded" and m["version"] == "v1.4.2"
+
+
+def test_rollback_to_the_previous_good_version_does_fix_it(env):
+    """The one correct answer still has to work — this is the demo path."""
+    result = tools.rollback_service("checkout-service", "v1.4.1")
+    assert result["ok"] is True
+    m = tools.get_metrics("checkout-service")
+    assert m["status"] == "healthy" and m["version"] == "v1.4.1"
+
+
 # --- EVENT_CONTRACT.md -----------------------------------------------------
 REQUIRED_FIELDS = {
     "run_started": {"scenario"},
