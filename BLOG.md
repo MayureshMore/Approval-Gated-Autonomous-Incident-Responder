@@ -58,13 +58,20 @@ each property is a test:
 
 - the network is dead — `socket` won't import
 - `subprocess` won't import, and `os.system` is gone
-- `os.listdir('.')` sees exactly one file: the diagnostics module
 - `OPENAI_API_KEY` does not exist in the environment
-- an infinite loop is killed by a wall-clock timeout
-- a 4GB allocation dies in the child, and the parent is still standing
+- the filesystem is confined to the sandbox's own directory — it cannot read the
+  repo, `/etc/passwd`, or the `.env` holding our gateway key, and cannot write
+  anywhere else
+- an infinite loop is killed by the CPU cap
+- whatever happens in there, the parent survives and stays usable
 
-Fifteen tests hold that line. When a judge asks "is it really sandboxed?", the
-answer is `pytest tests/test_sandbox.py`, not a paragraph.
+Thirty-two tests hold that line. When a judge asks "is it really sandboxed?",
+the answer is `pytest tests/test_sandbox.py`, not a paragraph.
+
+Two of those bullets are honest corrections rather than things we got right
+first time, and both are in "What broke" below. The list used to end with *"a
+4GB allocation dies in the child"* — it doesn't, on a Mac, and the test that
+claimed it was passing for an unrelated reason.
 
 ---
 
@@ -242,4 +249,4 @@ make setup && make demo
 
 Open http://localhost:8500/. No API key needed. Watch it stop and ask you.
 
-MIT licensed. 161 tests.
+MIT licensed. 227 tests.

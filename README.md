@@ -5,8 +5,20 @@ writes and runs its own diagnostic **in a sandbox**, and then **stops and asks a
 human before any destructive action** — executing only on approval, then
 confirming recovery.
 
-Built for the Agent Harness Hackathon. Primary runtime = TrueFoundry harness; the
-repo also ships a self-contained path so there is always a working demo.
+Built for the Agent Harness Hackathon.
+
+**Where TrueFoundry sits, stated precisely.** Every model call goes through the
+**TrueFoundry AI Gateway** — routed, authenticated and traced, with each request
+tagged `X-TFY-METADATA` so a run on the dashboard maps to its own cost and
+latency in TrueFoundry's observability. A preflight validates the configured
+model id against the gateway's own catalogue and refuses to start on a mismatch.
+Swapping the underlying model is a config change, not a code change.
+
+The gateway is an OpenAI-compatible model router, not an agent runtime — so the
+harness layer here (sandboxed execution, the approval gate, subagents, session
+survival) is **ours**, built to the contracts in `TOOL_CONTRACT.md` and
+`EVENT_CONTRACT.md`. We are not claiming TrueFoundry runs the agent loop; it
+routes and observes every model call the loop makes.
 
 ---
 
@@ -50,7 +62,7 @@ Reset between runs:
 
 **Providers.** `--provider sim` is deterministic and needs no API key — it drives
 the *real* gate, sandbox and environment, with only token generation scripted.
-`--provider truefoundry` is the primary runtime (below); `--provider openai` and
+`--provider truefoundry` routes through the gateway (below); `--provider openai` and
 `--provider anthropic` run the identical loop against those APIs directly.
 
 ### Running on the TrueFoundry AI Gateway
@@ -79,7 +91,7 @@ latency in TrueFoundry's observability.
 
 ```bash
 .venv/bin/python run_agent.py --selftest   # verify wiring before you present
-.venv/bin/python -m pytest                 # 127 tests
+.venv/bin/python -m pytest                 # 227 tests
 ```
 
 ---
@@ -93,9 +105,13 @@ retrying or substituting another destructive action.
 
 **A sandbox that is a real boundary.** The agent writes a diagnostic; we execute
 it in a separate process with a scrubbed environment, a throwaway working
-directory, resource limits and a wall-clock kill. Inside it, the network is dead,
-`subprocess` will not import, `os.listdir()` sees only `diagnostics.py`, and
-`OPENAI_API_KEY` does not exist. Fifteen tests hold that line.
+directory, a CPU cap and a wall-clock kill. Inside it the network is dead,
+`subprocess` will not import, `OPENAI_API_KEY` does not exist, and the
+filesystem is confined to the sandbox's own directory — it cannot read this
+repo, `/etc/passwd`, or the `.env` holding the gateway key, and cannot write
+anywhere else. That last part was a real hole: until we went looking, a
+diagnostic could `open('.env').read()` and hand the live key back in its own
+result. Thirty-two tests hold the line now, including those escapes verbatim.
 
 **Reasoning that is forced, not staged.** The scenario is built so a restart
 *cannot* fix the incident — only correctly correlating the bad deploy and rolling
@@ -110,7 +126,9 @@ untouched.
 | Claim | Test |
 |---|---|
 | Nothing destructive runs without a human | `test_no_destructive_call_without_a_prior_approval` — walks the event stream, fails if a destructive call ever precedes its approval |
-| The diagnostic really is sandboxed | `tests/test_sandbox.py` — network, subprocess, filesystem, secrets, CPU, memory |
+| The diagnostic really is sandboxed | `tests/test_sandbox.py` — network, subprocess, filesystem confinement, secrets, CPU |
+| A human is never asked to approve something unexplained | `test_every_gated_tool_demands_a_reason`, `test_silent_destructive_call_still_gets_an_explained_card` |
+| One approval opens exactly one gate | `test_a_decision_is_not_reused_by_a_later_gate` — an approval cannot leak into the next run |
 | The gate fails closed | `tests/test_approval.py` — timeout, dead bus, interrupt, non-tty |
 | A rejection is respected | `test_rejected_run_leaves_production_untouched` |
 | Kill it mid-incident and it resumes, gate intact | `test_resume_still_asks_before_the_destructive_action`, `test_resume_honours_a_rejection_from_before_the_crash` |
@@ -135,8 +153,8 @@ untouched.
 | `integrations/github_ops.py` | Real revert PR — argv-only, temp clone, dry-run by default |
 | `mock_env/` | The breakable prod stack (telemetry + mock actions) |
 | `approval_server.py` | Event bus + in-UI approval bridge + serves the dashboard |
-| `ui/dashboard.html` | The dashboard: timeline, approval card, before→after metrics |
-| `tests/` | 127 tests |
+| `ui/dashboard.html` | The dashboard: filterable timeline, approval card, before→after metrics |
+| `tests/` | 227 tests |
 | `CLAUDE.md` | The plan: layers, cut-lines, tracks |
 | `TOOL_CONTRACT.md` / `EVENT_CONTRACT.md` | Frozen seams between the two workstreams |
 | `PERSON_A_AGENT.md` / `PERSON_B_INTERFACE.md` | Per-owner briefs and live status |
@@ -144,12 +162,25 @@ untouched.
 
 ## Status
 
-Layers 0 (mock loop), 1 (sandboxed diagnostic) and 4 (session survival), plus
-subagents, are **done and demoable** — with no API key at all, via `--provider
-sim`. The TrueFoundry gateway is **live and verified**: a full incident response
-has run on GPT-4o through it, end to end. Layer 2 (real GitHub revert PR) is
-written, hardened and tested but not yet fired against a live repo — it stays
-dry-run until `GITHUB_REVERT_ENABLED=1`. See `PERSON_A_AGENT.md` for the ledger.
+**Demoable end to end with no API key**, via `--provider sim`: the mock loop, the
+sandboxed diagnostic, parallel subagents, and session survival. The TrueFoundry
+gateway is **live and verified** — full incident responses have run on GPT-4o
+through it, reaching the same 0.76 correlation and the same recovery.
+
+Layer 2 (a real GitHub revert PR) is written, hardened and tested, but has not
+been fired against a live repo. It stays dry-run until `GITHUB_REVERT_ENABLED=1`,
+and it goes through the `gh` CLI rather than MCP.
+
+**Known limits, stated rather than buried.** There is no memory cap on macOS —
+it rejects `RLIMIT_AS`, `RLIMIT_DATA` and `RLIMIT_RSS` alike, so what protects
+the parent is process isolation plus the wall-clock kill, not an address-space
+limit. And a decision posted to the bus with no `request_id` still satisfies any
+pending gate for that action; that is a deliberate trade so a stale cached
+dashboard cannot deadlock a live run, and the shipped dashboard always sends a
+real id.
+
+`PERSON_A_AGENT.md` and `PERSON_B_AGENT.md` carry the full engineering ledger,
+including every bug we found on ourselves and how.
 
 ## License / provenance
 MIT — see [LICENSE](LICENSE). Open source, as the hackathon requires.
