@@ -28,7 +28,7 @@ KICKOFF = "A production alert just fired. Investigate the root cause and resolve
 
 
 def load_system_prompt() -> str:
-    with open(os.path.join(_REPO, "agent_prompt.md")) as f:
+    with open(os.path.join(_REPO, "agent_prompt.md"), encoding="utf-8") as f:
         return f.read()
 
 

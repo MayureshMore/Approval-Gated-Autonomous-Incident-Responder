@@ -38,13 +38,13 @@ class SessionStore:
         state = {**state, "saved_at": time.time()}
         target = self.path(state["run_id"])
         tmp = target + ".tmp"
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2, default=str)
         os.replace(tmp, target)
         return target
 
     def load(self, run_id: str) -> dict:
-        with open(self.path(run_id)) as f:
+        with open(self.path(run_id), encoding="utf-8") as f:
             return json.load(f)
 
     def exists(self, run_id: str) -> bool:
@@ -59,7 +59,7 @@ class SessionStore:
             if not name.endswith(".json"):
                 continue
             try:
-                with open(os.path.join(self.root, name)) as f:
+                with open(os.path.join(self.root, name), encoding="utf-8") as f:
                     s = json.load(f)
                 out.append({"run_id": s.get("run_id", name[:-5]),
                             "status": s.get("status"), "step": s.get("step"),

@@ -112,7 +112,7 @@ class EventBus:
         try:
             os.makedirs(os.path.dirname(self.events_path), exist_ok=True)
             tmp = self.events_path + ".tmp"
-            with open(tmp, "w") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self.events, f, indent=2)
             os.replace(tmp, self.events_path)  # atomic: the UI never reads a half file
         except OSError as exc:

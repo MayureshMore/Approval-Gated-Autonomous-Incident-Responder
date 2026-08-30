@@ -57,7 +57,7 @@ def test_latest_is_none_when_everything_finished(store):
 def test_a_corrupt_state_file_is_skipped_not_fatal(store):
     store.save({"run_id": "good", "status": RUNNING})
     os.makedirs(store.root, exist_ok=True)
-    with open(os.path.join(store.root, "torn.json"), "w") as f:
+    with open(os.path.join(store.root, "torn.json"), "w", encoding="utf-8") as f:
         f.write("{not json")
     assert [r["run_id"] for r in store.list_runs()] == ["good"]
 

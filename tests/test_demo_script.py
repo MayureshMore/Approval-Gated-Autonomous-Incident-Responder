@@ -21,7 +21,7 @@ SCRIPT = os.path.join(REPO, "scripts", "demo.sh")
 
 @pytest.fixture(scope="module")
 def source() -> str:
-    with open(SCRIPT) as f:
+    with open(SCRIPT, encoding="utf-8") as f:
         return f.read()
 
 
@@ -177,7 +177,7 @@ def test_missing_interpreter_gives_an_actionable_message(source):
 
 # --- Makefile --------------------------------------------------------------
 def test_makefile_targets_exist():
-    with open(os.path.join(REPO, "Makefile")) as f:
+    with open(os.path.join(REPO, "Makefile"), encoding="utf-8") as f:
         mk = f.read()
     for target in ("demo:", "demo-live:", "demo-resume:", "test:", "selftest:", "reset:"):
         assert target in mk, f"Makefile is missing the {target} target"
@@ -185,5 +185,5 @@ def test_makefile_targets_exist():
 
 def test_makefile_declares_phony_targets():
     """Without .PHONY, a file named `test` would silently break `make test`."""
-    with open(os.path.join(REPO, "Makefile")) as f:
+    with open(os.path.join(REPO, "Makefile"), encoding="utf-8") as f:
         assert ".PHONY:" in f.read()

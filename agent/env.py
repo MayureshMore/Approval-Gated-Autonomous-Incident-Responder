@@ -18,7 +18,7 @@ def load_dotenv(path: Optional[str] = None) -> list[str]:
         return []
 
     loaded = []
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for raw in f:
             line = raw.strip()
             if not line or line.startswith("#") or "=" not in line:
