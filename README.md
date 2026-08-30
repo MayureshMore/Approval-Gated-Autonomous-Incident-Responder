@@ -36,6 +36,10 @@ Then open **http://localhost:8500/**. `make demo` needs no API key — it uses t
 deterministic `sim` provider, which drives the *real* gate, sandbox and
 environment with only token generation scripted.
 
+**No terminal?** Open `ui/pitch.html` in a browser — it replays a real
+recorded gateway run, event by event, and stops to ask your permission exactly
+where the live agent does.
+
 `make demo-live` runs the identical demo on a real GPT-4o **through the
 TrueFoundry gateway** — that is the one to watch if you want to see the gateway
 carrying the run. `make demo-resume` replays the session-survival beat. Ctrl-C
@@ -158,6 +162,7 @@ untouched.
 | `mock_env/` | The breakable prod stack (telemetry + mock actions) |
 | `approval_server.py` | Event bus + in-UI approval bridge + serves the dashboard |
 | `ui/dashboard.html` | The dashboard: filterable timeline, approval card, before→after metrics |
+| `ui/pitch.html` | Self-contained walkthrough — replays a **real** GPT-4o run event by event, and pauses for your approval. Open it straight from disk, no server needed |
 | `tests/` | 227 tests |
 | `CLAUDE.md` | The plan: layers, cut-lines, tracks |
 | `TOOL_CONTRACT.md` / `EVENT_CONTRACT.md` | Frozen seams between the two workstreams |
