@@ -2,12 +2,21 @@
 
 Target: 90 seconds.
 
-**Start it with `make demo`.** It brings up both servers, waits until they
-actually answer, resets the scenario so the run is deterministic, starts the
-agent, and cleans everything up on Ctrl-C. Dashboard: http://localhost:8500/
+**Record with `make demo-live`.** Same demo, but every model call goes through
+the TrueFoundry gateway on a real GPT-4o — which is what makes the gateway
+integration something on screen rather than a claim. Verified end to end on the
+live gateway: 4 steps, correlation 0.76, recovery to v1.4.1.
 
-`make demo-live` is the same run on the TrueFoundry gateway. Reset by hand
-between takes if you are not using the launcher:
+**`make demo` is the fallback** — the deterministic `sim` provider, no network
+and no API key, for a dead venue wifi or a wobbling gateway. It drives the same
+gate, sandbox and environment; only token generation is scripted. If a live take
+fails, switch and keep going; nothing in the narration changes.
+
+Either way the launcher brings up both servers, waits until they actually
+answer, resets the scenario, starts the agent, and cleans up on Ctrl-C.
+Dashboard: http://localhost:8500/
+
+Reset by hand between takes if you are not using the launcher:
 `curl -X POST localhost:8000/reset && curl -X POST localhost:8500/reset`
 
 **Restart the servers after any code change** — uvicorn does not reload, and a
@@ -17,7 +26,7 @@ stale server will happily show you the old behaviour.
 "This is an on-call AI incident responder. A critical alert just fired on
 checkout-service.
 
-[start the run — `make demo`]
+[start the run — `make demo-live`]
 
 Three subagents sweep metrics, logs and deploys in parallel — watch them fill in.
 
@@ -37,6 +46,30 @@ Rollback executes… and checkout-service is back to healthy — error rate 0.4%
 
 The agent did 30 minutes of 2 AM investigation in seconds, and asked before the one
 action that could make things worse."
+
+## The TrueFoundry beat — 15 seconds, and it is the gateway evidence
+
+Do this right after the recovery, while the dashboard still shows the finished
+run. It costs nothing and it is the difference between claiming the gateway and
+showing it.
+
+"Every model call in that run went through the TrueFoundry AI Gateway — routed,
+authenticated and traced. Each request is tagged with the run id, so this run on
+the dashboard maps to its own token spend and latency in TrueFoundry's
+observability."
+
+[open the TrueFoundry observability view and point at the run]
+
+"And because the gateway is the model boundary, swapping GPT-4o for anything
+else my tenant exposes is a config change, not a code change — the preflight
+even validates the model id against the gateway's own catalogue before a run
+starts, so a bad id fails before the demo instead of during it."
+
+[optionally: `.venv/bin/python run_agent.py --list-models`]
+
+Be precise about the split: **the gateway routes and observes every model call;
+the harness layer above it — sandbox, approval gate, subagents, session
+survival — is ours, built to a frozen contract.** See the track notes below.
 
 ## Bonus beat — session survival (Layer 4, cheap and verified)
 Do this instead of the approve-immediately ending, if there's time — it's a

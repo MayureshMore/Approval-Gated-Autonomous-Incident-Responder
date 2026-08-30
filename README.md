@@ -33,9 +33,13 @@ make demo      # starts everything, resets the scenario, runs the agent
 ```
 
 Then open **http://localhost:8500/**. `make demo` needs no API key — it uses the
-deterministic `sim` provider. `make demo-live` runs the same thing on a real
-model through the TrueFoundry gateway, and `make demo-resume` replays the
-session-survival beat. Ctrl-C stops everything and releases the ports.
+deterministic `sim` provider, which drives the *real* gate, sandbox and
+environment with only token generation scripted.
+
+`make demo-live` runs the identical demo on a real GPT-4o **through the
+TrueFoundry gateway** — that is the one to watch if you want to see the gateway
+carrying the run. `make demo-resume` replays the session-survival beat. Ctrl-C
+stops everything and releases the ports.
 
 <details>
 <summary>Running the three processes by hand instead</summary>
