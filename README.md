@@ -22,6 +22,16 @@ routes and observes every model call the loop makes.
 
 ---
 
+## See it work in 20 seconds, no setup at all
+
+Open **[`ui/pitch.html`](ui/pitch.html)** in a browser, straight from disk. It
+replays a **real** GPT-4o run through the TrueFoundry gateway — the actual 19
+events captured off the event bus, not a mockup — and **stops to ask your
+approval** exactly where the live agent does. Approve and it recovers; reject and
+it stands down and tells you production was deliberately left broken.
+
+No server, no venv, no network, no API key.
+
 ## Quick start — 60 seconds, no API key needed
 
 ```bash
@@ -129,6 +139,23 @@ back does. A test keeps it that way.
 Porting to a new runtime is one class; the loop, the gate and the sandbox are
 untouched.
 
+## What is real, and what is synthetic
+
+The first question worth asking about any agent demo.
+
+| Component | Real? | Detail |
+|---|---|---|
+| The incident | **Synthetic** | `mock_env/` generates the telemetry, logs and deploy history. Deliberately: it is reproducible, `/reset`-able, and there is no real production to break. A flight simulator, not a fake cockpit. |
+| The model | **Real** | Live GPT-4o through the TrueFoundry gateway. Real tokens, real cost, real latency. |
+| The diagnostic code | **Real** | Genuinely model-authored Python. We do not template it. |
+| The sandbox | **Real** | Separate OS process, scrubbed env, CPU cap, wall-clock kill, import denylist, filesystem confinement. |
+| The correlation maths | **Real** | Actual datetime arithmetic over the payload the agent assembled itself. |
+| The approval gate | **Real** | HTTP bus, real human decision, and it fails closed. |
+| GitHub revert PR | **Dry-run** | Real code via the `gh` CLI, gated behind `GITHUB_REVERT_ENABLED=1`. Not fired against a live repo. |
+
+> The incident is simulated. The agent's behaviour is not. Every safety property
+> we claim is enforced by the operating system or by a test you can run right now.
+
 ## The claims, and the test that proves each
 
 | Claim | Test |
@@ -141,6 +168,67 @@ untouched.
 | A rejection is respected | `test_rejected_run_leaves_production_untouched` |
 | Kill it mid-incident and it resumes, gate intact | `test_resume_still_asks_before_the_destructive_action`, `test_resume_honours_a_rejection_from_before_the_crash` |
 | The seam with the dashboard holds | `tests/test_contracts.py` — every field in `TOOL_CONTRACT.md` / `EVENT_CONTRACT.md` |
+
+## How we tested it
+
+227 tests are the floor, not the story.
+
+- **Adversarial.** Ten sandbox escape attempts, including `io.FileIO` and
+  `os.open` bypasses that sidestep `builtins.open`. Ten blocked, and real
+  analysis still runs.
+- **Failure injection.** Killed the bus mid-approval, killed the environment
+  mid-run, `kill -9` on the agent. No tracebacks reach the operator — failures
+  come back as data the model can react to.
+- **Concurrency.** Two agents on one bus: one approval opens exactly one gate.
+- **Mutation testing.** We broke five load-bearing assertions on purpose and
+  confirmed each one caught it. A test that cannot fail is not a test.
+- **Hostile input.** Twelve events carrying `<script>` and `<img onerror>` in
+  every field, rendered through the dashboard. Zero injections survived.
+- **Fresh-clone rehearsal**, and five-plus live gateway runs hitting 0.76 every
+  time.
+
+## The bugs we found on ourselves
+
+We went looking rather than waiting to be caught. **The suite was green through
+every one of these** — which is the point.
+
+**Three that broke the core claim.**
+
+1. **The approval gate failed open between runs.** Approve a rollback once; start
+   a second run without resetting the bus, and it executed with nobody at the
+   keyboard — recording `by: "human"` for a decision no human made. `GET
+   /decision` matched on action name, and action names are not unique across
+   runs. Fixed on the bus, which is the only place it works: the agent's own
+   stale-id guard lives in process memory and is empty in a fresh process.
+2. **The sandbox could read any file on the machine.** It blocked sockets,
+   subprocesses and dangerous imports — but nothing stopped `open('.env').read()`.
+   We proved it by doing it: a diagnostic handed back our **live TrueFoundry API
+   key** in its own result, and could write anywhere on disk. Scrubbing the
+   environment is not enough when the secrets are also on disk. Every
+   path-opening entry point is now confined to the sandbox directory.
+3. **The approval card was blank on every live run** — it read *"no rationale
+   given"*. The rationale came only from prose in the same turn as the tool call,
+   and GPT-4o fires the call with empty text, so a human was being asked to
+   authorise a production rollback **with nothing to read**. It looked correct in
+   simulation, because the scripted provider always narrates. `reason` is now a
+   required parameter on every gated tool, with a fallback to the sandbox verdict.
+
+**Three where the system claimed something untrue.** It blamed a human for a
+denial no human made (a dead bus produced *"rejected by the on-call human"*). It
+reported `executed` for an action that failed — approval is not execution. And a
+test was passing for the wrong reason: `assert not ok` on a 4 GB allocation
+passed because a bytearray is not JSON-serialisable, not because any limit fired.
+macOS rejects every memory rlimit, so we corrected the *claim* rather than the
+test.
+
+**Plus** an environment that healed on *any* version string (rewarding a wrong
+diagnosis), `/scale` accepting `-5` replicas, `limit=0` returning everything, XSS
+via agent-written Python in the timeline, and a timeline with no scroll container
+that pushed the approval button off-screen mid-run.
+
+**Qodo found seven more** across pull requests — including a launcher that would
+have auto-approved everything while the UI still claimed to be gating. All fixed
+before merge.
 
 ## What's where
 
